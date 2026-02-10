@@ -1,0 +1,7 @@
+{
+  "name": "Smoky Scout Pro",
+  "description": "A high-performance FRC scouting application for the Smoky Mountain Regional, featuring pit and match scouting, real-time data entry, and CSV export capabilities.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
