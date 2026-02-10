@@ -4,7 +4,7 @@ import { Team, PitData, MatchData, MatchRole, Accuracy, StartingPosition } from 
 import { SMOKY_MOUNTAIN_TEAMS, DRIVETRAIN_TYPES, MOTOR_TYPES, ARCHETYPES, CLIMB_CAPABILITIES } from './constants';
 import { savePitData, saveMatchData } from './lib/api';
 import { addToSyncQueue, getSyncQueue, startSyncService } from './lib/sync';
-import { encodeMatchData } from './lib/qr-encode';
+import { encodeMatchData, encodeBulkMatchData } from './lib/qr-encode';
 import { Button } from './components/Button';
 import { Input, Toggle, Select, RadioGroup } from './components/Input';
 import { SyncStatus } from './components/SyncStatus';
@@ -49,7 +49,9 @@ import {
   Layout,
   UserCheck,
   Hand,
-  ScanLine
+  ScanLine,
+  QrCode,
+  Share2
 } from 'lucide-react';
 
 const STORAGE_KEY_PIT = 'smoky_scout_pit_v3';
@@ -247,13 +249,14 @@ const App: React.FC = () => {
         )}
 
         {view === 'team_detail' && selectedTeam && (
-          <TeamDetail 
-            team={selectedTeam} 
+          <TeamDetail
+            team={selectedTeam}
             pit={pitData[selectedTeam.number]}
             matches={matchData.filter(m => m.teamNumber === selectedTeam.number)}
             onBack={() => setView('dashboard')}
             onPitClick={() => setView('pit')}
             onMatchClick={() => setView('match')}
+            onShowMatchQR={(m) => setQrModalData(encodeMatchData(m))}
           />
         )}
 
@@ -293,17 +296,43 @@ const App: React.FC = () => {
 
         {view === 'scanner' && (
           <QRScanner
-            onImport={(d) => {
+            onImport={(matches) => {
               setMatchData(prev => {
-                if (prev.some(m => m.matchNumber === d.matchNumber && m.teamNumber === d.teamNumber && m.timestamp === d.timestamp)) return prev;
-                return [d, ...prev];
+                let updated = [...prev];
+                for (const d of matches) {
+                  const idx = updated.findIndex(m => m.matchNumber === d.matchNumber && m.teamNumber === d.teamNumber);
+                  if (idx >= 0) {
+                    // Smart merge: newer timestamp wins
+                    if (d.timestamp > updated[idx].timestamp) {
+                      updated[idx] = d;
+                    }
+                  } else {
+                    updated = [d, ...updated];
+                  }
+                }
+                return updated;
               });
-              saveMatchData(d).catch(() => {
-                addToSyncQueue({ type: 'match', data: d });
-                setPendingSync(getSyncQueue().length);
-              });
+              for (const d of matches) {
+                saveMatchData(d).catch(() => {
+                  addToSyncQueue({ type: 'match', data: d });
+                  setPendingSync(getSyncQueue().length);
+                });
+              }
             }}
             onBack={() => setView('dashboard')}
+          />
+        )}
+
+        {view === 'settings' && (
+          <ConfigView
+            matchData={matchData}
+            onShowQR={(data) => setQrModalData(data)}
+            onClearData={() => {
+              setPitData({});
+              setMatchData([]);
+              localStorage.removeItem(STORAGE_KEY_PIT);
+              localStorage.removeItem(STORAGE_KEY_MATCH);
+            }}
           />
         )}
       </main>
@@ -325,7 +354,7 @@ const NavButton: React.FC<{ active: boolean, onClick: () => void, icon: React.Re
   </button>
 );
 
-const TeamDetail: React.FC<{ team: Team, pit?: PitData, matches: MatchData[], onBack: () => void, onPitClick: () => void, onMatchClick: () => void }> = ({ team, pit, matches, onBack, onPitClick, onMatchClick }) => (
+const TeamDetail: React.FC<{ team: Team, pit?: PitData, matches: MatchData[], onBack: () => void, onPitClick: () => void, onMatchClick: () => void, onShowMatchQR: (m: MatchData) => void }> = ({ team, pit, matches, onBack, onPitClick, onMatchClick, onShowMatchQR }) => (
   <div className="space-y-8 animate-in fade-in duration-300">
     <button onClick={onBack} className="flex items-center gap-2 text-slate-400 font-semibold"><ArrowLeft className="w-5 h-5" /> Dashboard</button>
     <div className="bg-slate-900 border-2 border-slate-800 rounded-3xl p-8 shadow-2xl">
@@ -334,7 +363,7 @@ const TeamDetail: React.FC<{ team: Team, pit?: PitData, matches: MatchData[], on
     </div>
     <div className="grid grid-cols-2 gap-4">
       <Button size="lg" className="flex-col h-32 gap-3" onClick={onPitClick}>
-        <ClipboardCheck className={`w-8 h-8 ${pit ? 'text-green-500' : ''}`} /> 
+        <ClipboardCheck className={`w-8 h-8 ${pit ? 'text-green-500' : ''}`} />
         {pit ? 'Edit Pit Data' : 'Add Pit Data'}
       </Button>
       <Button size="lg" variant="outline" className="flex-col h-32 gap-3" onClick={onMatchClick}><Plus className="w-8 h-8 text-blue-500" /> Log Match</Button>
@@ -344,14 +373,17 @@ const TeamDetail: React.FC<{ team: Team, pit?: PitData, matches: MatchData[], on
       {matches.length === 0 ? <p className="text-slate-600 italic">No matches logged.</p> : (
         <div className="space-y-3">
           {matches.map(m => (
-            <div key={m.id} className="p-4 bg-slate-900 border-2 border-slate-800 rounded-2xl flex justify-between items-center">
-              <div>
+            <div key={m.id} className="p-4 bg-slate-900 border-2 border-slate-800 rounded-2xl flex items-center gap-3">
+              <div className="flex-1">
                 <p className="font-bold text-blue-400">Match #{m.matchNumber}</p>
                 <p className="text-xs text-slate-500 uppercase">{m.noShow ? 'No Show' : `${m.teleopRole} | ${m.teleopAccuracy}`}</p>
               </div>
-              <div className="text-right">
+              <div className="text-right flex-1">
                 <p className="font-bold text-slate-300">{m.noShow ? '-' : `Climb: ${m.climbLevel} | ${m.wonMatch ? 'Won' : 'Lost'}`}</p>
               </div>
+              <button onClick={() => onShowMatchQR(m)} className="p-2 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 transition-colors">
+                <QrCode className="w-5 h-5 text-blue-400" />
+              </button>
             </div>
           ))}
         </div>
@@ -871,5 +903,64 @@ const Counter: React.FC<{ label: string, value: number, onChange: (v: number) =>
     </div>
   </div>
 );
+
+const ConfigView: React.FC<{ matchData: MatchData[], onShowQR: (data: string) => void, onClearData: () => void }> = ({ matchData, onShowQR, onClearData }) => {
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  return (
+    <div className="space-y-8 pb-12">
+      <h2 className="text-3xl font-header text-white">CONFIG</h2>
+
+      <div className="space-y-4">
+        <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">Share Data</h3>
+        <Button
+          size="lg"
+          className="w-full h-16"
+          onClick={() => {
+            if (matchData.length === 0) return;
+            onShowQR(encodeBulkMatchData(matchData));
+          }}
+          disabled={matchData.length === 0}
+        >
+          <Share2 className="w-5 h-5 mr-2" />
+          Share All My Matches ({matchData.length})
+        </Button>
+        <p className="text-xs text-slate-500">
+          Generates one QR code with all your match data. Any scout can scan it to import everything at once. Newer data automatically overwrites older data.
+        </p>
+      </div>
+
+      <div className="space-y-4 pt-6 border-t border-slate-800">
+        <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">App Info</h3>
+        <div className="bg-slate-900 border-2 border-slate-800 rounded-2xl p-4 space-y-2 text-sm">
+          <div className="flex justify-between"><span className="text-slate-500">Version</span><span className="text-slate-300">1.0.0</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Matches Stored</span><span className="text-slate-300">{matchData.length}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Device ID</span><span className="text-slate-400 font-mono text-xs truncate max-w-[180px]">{localStorage.getItem('smoky_scout_device_id') || 'N/A'}</span></div>
+        </div>
+      </div>
+
+      <div className="space-y-4 pt-6 border-t border-slate-800">
+        <h3 className="text-xs font-bold uppercase tracking-widest text-red-400">Danger Zone</h3>
+        {!confirmClear ? (
+          <Button variant="danger" size="lg" className="w-full" onClick={() => setConfirmClear(true)}>
+            Clear All Local Data
+          </Button>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm text-red-400">This deletes all pit and match data from this device. Are you sure?</p>
+            <div className="flex gap-3">
+              <Button variant="danger" className="flex-1" onClick={() => { onClearData(); setConfirmClear(false); }}>
+                Yes, Delete Everything
+              </Button>
+              <Button variant="secondary" className="flex-1" onClick={() => setConfirmClear(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 export default App;

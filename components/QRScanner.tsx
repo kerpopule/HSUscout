@@ -1,21 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
-import { Camera, CheckCircle2, XCircle, ArrowLeft } from 'lucide-react';
+import { Camera, CheckCircle2, RefreshCw, XCircle, ArrowLeft } from 'lucide-react';
 import { Button } from './Button';
-import { decodeMatchData } from '../lib/qr-encode';
+import { decodeQR } from '../lib/qr-encode';
 import { MatchData } from '../types';
 
 interface QRScannerProps {
-  onImport: (data: MatchData) => void;
+  onImport: (matches: MatchData[]) => void;
   onBack: () => void;
 }
 
 export const QRScanner: React.FC<QRScannerProps> = ({ onImport, onBack }) => {
   const [scanning, setScanning] = useState(false);
-  const [results, setResults] = useState<{ data: MatchData; time: number }[]>([]);
+  const [results, setResults] = useState<{ data: MatchData; updated: boolean; time: number }[]>([]);
   const [error, setError] = useState('');
   const scannerRef = useRef<Html5Qrcode | null>(null);
-  const seenIds = useRef(new Set<string>());
+  const processedQRs = useRef(new Set<string>());
 
   const startScanning = async () => {
     setError('');
@@ -26,14 +26,19 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onImport, onBack }) => {
         { facingMode: 'environment' },
         { fps: 10, qrbox: { width: 250, height: 250 } },
         (decodedText) => {
-          const match = decodeMatchData(decodedText);
-          if (match) {
-            const key = `${match.matchNumber}-${match.teamNumber}-${match.timestamp}`;
-            if (!seenIds.current.has(key)) {
-              seenIds.current.add(key);
-              setResults(prev => [{ data: match, time: Date.now() }, ...prev]);
-              onImport(match);
-            }
+          // Deduplicate by raw QR content so we don't re-process the same scan
+          if (processedQRs.current.has(decodedText)) return;
+          processedQRs.current.add(decodedText);
+
+          const matches = decodeQR(decodedText);
+          if (matches.length > 0) {
+            onImport(matches);
+            const newResults = matches.map(m => ({
+              data: m,
+              updated: false,
+              time: Date.now(),
+            }));
+            setResults(prev => [...newResults, ...prev]);
           }
         },
         () => {} // ignore scan failures
@@ -65,6 +70,7 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onImport, onBack }) => {
       </button>
 
       <h2 className="text-3xl font-header text-white">QR SCANNER</h2>
+      <p className="text-xs text-slate-500">Scans single match QR codes and bulk "Share All" QR codes. Newer data overwrites older data automatically.</p>
 
       <div id="qr-reader" className="rounded-2xl overflow-hidden bg-slate-900 border-2 border-slate-800" />
 
@@ -81,7 +87,7 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onImport, onBack }) => {
 
       {results.length > 0 && (
         <div className="space-y-3">
-          <h3 className="font-header text-xl text-slate-200">Imported ({results.length})</h3>
+          <h3 className="font-header text-xl text-slate-200">Imported ({results.length} matches)</h3>
           {results.map((r, i) => (
             <div key={i} className="flex items-center gap-3 p-3 bg-green-500/5 border border-green-500/20 rounded-xl">
               <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0" />
