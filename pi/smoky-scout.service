@@ -1,0 +1,16 @@
+[Unit]
+Description=Smoky Scout Pro Server
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/HSUscout
+ExecStart=/usr/bin/node server/index.ts
+Restart=always
+RestartSec=5
+Environment=PORT=3001
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

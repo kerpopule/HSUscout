@@ -1,19 +1,24 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { GoogleGenAI } from "@google/genai";
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Team, PitData, MatchData, MatchRole, Accuracy, StartingPosition } from './types';
 import { SMOKY_MOUNTAIN_TEAMS, DRIVETRAIN_TYPES, MOTOR_TYPES, ARCHETYPES, CLIMB_CAPABILITIES } from './constants';
+import { savePitData, saveMatchData } from './lib/api';
+import { addToSyncQueue, getSyncQueue, startSyncService } from './lib/sync';
+import { encodeMatchData } from './lib/qr-encode';
 import { Button } from './components/Button';
 import { Input, Toggle, Select, RadioGroup } from './components/Input';
-import { 
-  Trophy, 
-  Users, 
-  ClipboardCheck, 
-  Download, 
-  Settings, 
-  ChevronRight, 
-  Plus, 
-  Trash2, 
+import { SyncStatus } from './components/SyncStatus';
+import { QRCodeModal } from './components/QRCodeModal';
+import { QRScanner } from './components/QRScanner';
+import {
+  Trophy,
+  Users,
+  ClipboardCheck,
+  Download,
+  Settings,
+  ChevronRight,
+  Plus,
+  Trash2,
   Activity,
   ArrowLeft,
   Search,
@@ -43,13 +48,14 @@ import {
   Clock,
   Layout,
   UserCheck,
-  Hand
+  Hand,
+  ScanLine
 } from 'lucide-react';
 
 const STORAGE_KEY_PIT = 'smoky_scout_pit_v3';
 const STORAGE_KEY_MATCH = 'smoky_scout_match_v6';
 
-type View = 'dashboard' | 'pit' | 'match' | 'settings' | 'team_detail' | 'strategy';
+type View = 'dashboard' | 'pit' | 'match' | 'settings' | 'team_detail' | 'strategy' | 'scanner';
 
 const App: React.FC = () => {
   const [view, setView] = useState<View>('dashboard');
@@ -57,6 +63,9 @@ const App: React.FC = () => {
   const [pitData, setPitData] = useState<Record<number, PitData>>({});
   const [matchData, setMatchData] = useState<MatchData[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isConnected, setIsConnected] = useState(false);
+  const [pendingSync, setPendingSync] = useState(getSyncQueue().length);
+  const [qrModalData, setQrModalData] = useState<string | null>(null);
 
   useEffect(() => {
     const savedPit = localStorage.getItem(STORAGE_KEY_PIT);
@@ -72,6 +81,19 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_MATCH, JSON.stringify(matchData));
   }, [matchData]);
+
+  // Sync service
+  useEffect(() => {
+    const stopSync = startSyncService({
+      onConnectionChange: setIsConnected,
+      onDataRefresh: (pit, match) => {
+        setPitData(pit);
+        setMatchData(match);
+      },
+      onQueueDrained: () => setPendingSync(0),
+    });
+    return stopSync;
+  }, []);
 
   const exportToCSV = useCallback(() => {
     const pitHeaders = "Team#,L,W,H,Weight,RoleAssessed,Archetype,ShooterConfig,Batteries,DriveType,Motors,Ratio,Exp,Ground,Outpost,Depot,Corral,Capacity,Preload,Bump,Trench,ShootOnMove,Feed,Rate,Trajectory,Extensions,AutoAlign,ClimbLvl,AutoClimb,ClimbTime,Notes";
@@ -125,10 +147,15 @@ const App: React.FC = () => {
           </div>
           <h1 className="font-header text-2xl tracking-tight leading-none">SMOKY SCOUT PRO</h1>
         </div>
-        <Button variant="ghost" size="sm" onClick={exportToCSV}>
-          <Download className="w-5 h-5 mr-2" /> Export
-        </Button>
+        <div className="flex items-center gap-3">
+          <SyncStatus isConnected={isConnected} pendingCount={pendingSync} />
+          <Button variant="ghost" size="sm" onClick={exportToCSV}>
+            <Download className="w-5 h-5 mr-2" /> Export
+          </Button>
+        </div>
       </header>
+
+      {qrModalData && <QRCodeModal data={qrModalData} onClose={() => setQrModalData(null)} />}
 
       <main className="flex-1 overflow-y-auto px-4 py-6 max-w-4xl mx-auto w-full">
         {view === 'dashboard' && (
@@ -231,28 +258,60 @@ const App: React.FC = () => {
         )}
 
         {view === 'pit' && selectedTeam && (
-          <PitScoutingForm 
-            team={selectedTeam} 
+          <PitScoutingForm
+            team={selectedTeam}
             initialData={pitData[selectedTeam.number]}
-            onSave={(d) => { setPitData(prev => ({...prev, [d.teamNumber]: d})); setView('team_detail'); }} 
+            onSave={(d) => {
+              setPitData(prev => ({...prev, [d.teamNumber]: d}));
+              savePitData(d).catch(() => {
+                addToSyncQueue({ type: 'pit', data: d });
+                setPendingSync(getSyncQueue().length);
+              });
+              setView('team_detail');
+            }}
             onCancel={() => setView('team_detail')}
           />
         )}
 
         {view === 'match' && selectedTeam && (
-          <MatchScoutingForm 
-            team={selectedTeam} 
-            onSave={(d) => { setMatchData(prev => [d, ...prev]); setView('team_detail'); }} 
+          <MatchScoutingForm
+            team={selectedTeam}
+            onSave={(d) => {
+              setMatchData(prev => [d, ...prev]);
+              saveMatchData(d).catch(() => {
+                addToSyncQueue({ type: 'match', data: d });
+                setPendingSync(getSyncQueue().length);
+              });
+              setQrModalData(encodeMatchData(d));
+              setView('team_detail');
+            }}
             onCancel={() => setView('team_detail')}
           />
         )}
 
         {view === 'strategy' && <StrategyLab pitData={pitData} matchData={matchData} />}
+
+        {view === 'scanner' && (
+          <QRScanner
+            onImport={(d) => {
+              setMatchData(prev => {
+                if (prev.some(m => m.matchNumber === d.matchNumber && m.teamNumber === d.teamNumber && m.timestamp === d.timestamp)) return prev;
+                return [d, ...prev];
+              });
+              saveMatchData(d).catch(() => {
+                addToSyncQueue({ type: 'match', data: d });
+                setPendingSync(getSyncQueue().length);
+              });
+            }}
+            onBack={() => setView('dashboard')}
+          />
+        )}
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 bg-slate-950/80 backdrop-blur-xl border-t border-slate-800 px-6 py-4 flex justify-around items-center z-50">
         <NavButton active={view === 'dashboard' || view === 'team_detail'} onClick={() => setView('dashboard')} icon={<Users className="w-6 h-6" />} label="Teams" />
         <NavButton active={view === 'strategy'} onClick={() => setView('strategy')} icon={<BrainCircuit className="w-6 h-6" />} label="Strategy" />
+        <NavButton active={view === 'scanner'} onClick={() => setView('scanner')} icon={<ScanLine className="w-6 h-6" />} label="Scan" />
         <NavButton active={view === 'settings'} onClick={() => setView('settings')} icon={<Settings className="w-6 h-6" />} label="Config" />
       </nav>
     </div>
@@ -685,32 +744,97 @@ const TeamPicker: React.FC<{ teams: number[], setTeams: React.Dispatch<React.Set
   </div>
 );
 
+const AllianceStats: React.FC<{ label: string, color: string, teamNumbers: number[], pitData: Record<number, PitData>, matchData: MatchData[] }> = ({ label, color, teamNumbers, pitData, matchData }) => {
+  const validTeams = teamNumbers.filter(n => n > 0);
+  if (validTeams.length === 0) return null;
+
+  const allMatches = validTeams.flatMap(n => matchData.filter(m => m.teamNumber === n));
+  const winRate = allMatches.length > 0 ? (allMatches.filter(m => m.wonMatch).length / allMatches.length * 100).toFixed(0) : 'N/A';
+  const avgOffense = allMatches.length > 0 ? (allMatches.reduce((s, m) => s + m.offensiveSkill, 0) / allMatches.length).toFixed(1) : 'N/A';
+  const avgDefense = allMatches.length > 0 ? (allMatches.reduce((s, m) => s + m.defensiveSkill, 0) / allMatches.length).toFixed(1) : 'N/A';
+  const avgTransition = allMatches.length > 0 ? (allMatches.reduce((s, m) => s + m.transitionQuickness, 0) / allMatches.length).toFixed(1) : 'N/A';
+  const foulRate = allMatches.length > 0 ? ((allMatches.reduce((s, m) => s + m.minorFouls + m.majorFouls, 0) / allMatches.length)).toFixed(1) : 'N/A';
+
+  const climbLevels = allMatches.filter(m => !m.noShow).map(m => m.climbLevel);
+  const avgClimb = climbLevels.length > 0 ? (climbLevels.reduce((s, c) => s + c, 0) / climbLevels.length).toFixed(1) : 'N/A';
+
+  const roleCount = { Shooter: 0, Feeder: 0, Defense: 0 };
+  allMatches.forEach(m => { if (roleCount[m.teleopRole as keyof typeof roleCount] !== undefined) roleCount[m.teleopRole as keyof typeof roleCount]++; });
+
+  const accCount = { '<50%': 0, '50-80%': 0, '>80%': 0, 'N/A': 0 };
+  allMatches.forEach(m => { if (accCount[m.teleopAccuracy as keyof typeof accCount] !== undefined) accCount[m.teleopAccuracy as keyof typeof accCount]++; });
+
+  const borderColor = color === 'blue' ? 'border-blue-500/30' : 'border-red-500/30';
+  const bgColor = color === 'blue' ? 'bg-blue-500/5' : 'bg-red-500/5';
+  const textColor = color === 'blue' ? 'text-blue-400' : 'text-red-400';
+
+  return (
+    <div className={`${bgColor} border ${borderColor} rounded-2xl p-4 space-y-4`}>
+      <h4 className={`text-xs font-bold uppercase ${textColor}`}>{label} Alliance Stats ({allMatches.length} matches)</h4>
+      <div className="grid grid-cols-3 gap-3">
+        <StatBox label="Win Rate" value={winRate === 'N/A' ? winRate : `${winRate}%`} />
+        <StatBox label="Avg Climb" value={avgClimb === 'N/A' ? avgClimb : `L${avgClimb}`} />
+        <StatBox label="Fouls/Match" value={foulRate} />
+        <StatBox label="Offense" value={`${avgOffense}/5`} />
+        <StatBox label="Defense" value={`${avgDefense}/5`} />
+        <StatBox label="Transition" value={`${avgTransition}/5`} />
+      </div>
+      {allMatches.length > 0 && (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-slate-950/40 rounded-xl p-3">
+            <span className="text-[9px] uppercase font-bold text-slate-500 block mb-1">Role Breakdown</span>
+            <div className="text-xs space-y-0.5">
+              <div className="flex justify-between"><span className="text-slate-400">Shooter</span><span className="text-slate-300 font-bold">{roleCount.Shooter}</span></div>
+              <div className="flex justify-between"><span className="text-slate-400">Feeder</span><span className="text-slate-300 font-bold">{roleCount.Feeder}</span></div>
+              <div className="flex justify-between"><span className="text-slate-400">Defense</span><span className="text-slate-300 font-bold">{roleCount.Defense}</span></div>
+            </div>
+          </div>
+          <div className="bg-slate-950/40 rounded-xl p-3">
+            <span className="text-[9px] uppercase font-bold text-slate-500 block mb-1">Accuracy Dist.</span>
+            <div className="text-xs space-y-0.5">
+              <div className="flex justify-between"><span className="text-slate-400">&gt;80%</span><span className="text-green-400 font-bold">{accCount['>80%']}</span></div>
+              <div className="flex justify-between"><span className="text-slate-400">50-80%</span><span className="text-yellow-400 font-bold">{accCount['50-80%']}</span></div>
+              <div className="flex justify-between"><span className="text-slate-400">&lt;50%</span><span className="text-red-400 font-bold">{accCount['<50%']}</span></div>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="space-y-2">
+        {validTeams.map(num => {
+          const pit = pitData[num];
+          const tm = matchData.filter(m => m.teamNumber === num);
+          return (
+            <div key={num} className="bg-slate-950/40 rounded-xl p-3">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-bold text-slate-200">Team {num}</span>
+                <span className="text-[10px] text-slate-500">{tm.length} matches</span>
+              </div>
+              <div className="text-xs text-slate-400 space-y-0.5">
+                {pit && <div>Drive: {pit.drivetrain.type} | Role: {pit.selfAssessedRole} | Climb: {pit.climb.maxLevel} | Rate: {pit.scoring.scoringRate || 'N/A'} FPS</div>}
+                {!pit && <div className="text-amber-400">No pit data</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+const StatBox: React.FC<{ label: string, value: string }> = ({ label, value }) => (
+  <div className="bg-slate-950/40 rounded-xl p-2 text-center">
+    <span className="text-[9px] uppercase font-bold text-slate-500 block">{label}</span>
+    <span className="text-sm font-bold text-slate-200">{value}</span>
+  </div>
+);
+
 const StrategyLab: React.FC<{ pitData: Record<number, PitData>, matchData: MatchData[] }> = ({ pitData, matchData }) => {
   const [blue, setBlue] = useState<number[]>([0, 0, 0]);
   const [red, setRed] = useState<number[]>([0, 0, 0]);
-  const [analysis, setAnalysis] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const runAnalysis = async () => {
-    setLoading(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const getStats = (num: number) => {
-        const pit = pitData[num];
-        const ms = matchData.filter(m => m.teamNumber === num);
-        return `Team ${num}: Archetype=${pit?.archetype || 'N/A'}, Accuracy=${ms[0]?.teleopAccuracy||'N/A'}`;
-      };
-      const prompt = `Analyze match-up for Smoky Mountain Regional FRC:\nBlue: ${blue.map(getStats).join('\n')}\nRed: ${red.map(getStats).join('\n')}\nProvide tactical roles for each blue team and predicted winner.`;
-      const res = await ai.models.generateContent({ model: 'gemini-3-pro-preview', contents: prompt });
-      setAnalysis(res.text || 'Error generating analysis.');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   return (
     <div className="space-y-8 pb-12">
-      <h2 className="text-3xl font-header text-blue-500">STRATEGY ENGINE</h2>
+      <h2 className="text-3xl font-header text-blue-500">STRATEGY LAB</h2>
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-4">
           <h3 className="text-xs font-bold text-blue-400 uppercase">Blue</h3>
@@ -721,8 +845,8 @@ const StrategyLab: React.FC<{ pitData: Record<number, PitData>, matchData: Match
           {[0, 1, 2].map(i => <TeamPicker key={i} teams={red} setTeams={setRed} index={i} />)}
         </div>
       </div>
-      <Button size="lg" className="w-full h-16" onClick={runAnalysis} disabled={loading}>{loading ? 'Calculating...' : 'Generate Win Strategy'}</Button>
-      {analysis && <div className="bg-slate-900 border-2 border-slate-800 rounded-3xl p-6 text-slate-300 text-sm whitespace-pre-wrap leading-relaxed shadow-xl">{analysis}</div>}
+      <AllianceStats label="Blue" color="blue" teamNumbers={blue} pitData={pitData} matchData={matchData} />
+      <AllianceStats label="Red" color="red" teamNumbers={red} pitData={pitData} matchData={matchData} />
     </div>
   );
 };
