@@ -2,14 +2,17 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Team, PitData, MatchData, MatchRole, Accuracy, StartingPosition } from './types';
 import { SMOKY_MOUNTAIN_TEAMS, DRIVETRAIN_TYPES, MOTOR_TYPES, ARCHETYPES, CLIMB_CAPABILITIES } from './constants';
-import { savePitData, saveMatchData } from './lib/api';
+import { savePitData, saveMatchData, updatePitData, deletePitData, updateMatchDataOnServer, deleteMatchData, clearAllServerData } from './lib/api';
 import { addToSyncQueue, getSyncQueue, startSyncService } from './lib/sync';
 import { encodeMatchData, encodeBulkMatchData } from './lib/qr-encode';
+import { pinStatus, pinSetup, pinVerify, getCachedPin, cachePin } from './lib/pin';
 import { Button } from './components/Button';
 import { Input, Toggle, Select, RadioGroup } from './components/Input';
 import { SyncStatus } from './components/SyncStatus';
 import { QRCodeModal } from './components/QRCodeModal';
 import { QRScanner } from './components/QRScanner';
+import { PinPad } from './components/PinPad';
+import { CardMenu } from './components/CardMenu';
 import {
   Trophy,
   Users,
@@ -68,6 +71,39 @@ const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [pendingSync, setPendingSync] = useState(getSyncQueue().length);
   const [qrModalData, setQrModalData] = useState<string | null>(null);
+  const [pinModal, setPinModal] = useState<{ mode: 'setup' | 'verify'; onSuccess: (pin: string) => void; title?: string } | null>(null);
+  const [editingMatch, setEditingMatch] = useState<MatchData | null>(null);
+
+  const requirePin = useCallback((callback: (pin: string) => void, title?: string) => {
+    const cached = getCachedPin();
+    if (cached) {
+      callback(cached);
+      return;
+    }
+    pinStatus().then(({ isSet }) => {
+      setPinModal({
+        mode: isSet ? 'verify' : 'setup',
+        title,
+        onSuccess: async (pin: string) => {
+          if (!isSet) {
+            try {
+              await pinSetup(pin);
+            } catch {
+              return;
+            }
+          } else {
+            const valid = await pinVerify(pin);
+            if (!valid) return;
+          }
+          cachePin(pin);
+          setPinModal(null);
+          callback(pin);
+        },
+      });
+    }).catch(() => {
+      alert('Cannot verify PIN while offline.');
+    });
+  }, []);
 
   useEffect(() => {
     const savedPit = localStorage.getItem(STORAGE_KEY_PIT);
@@ -156,6 +192,14 @@ const App: React.FC = () => {
       </header>
 
       {qrModalData && <QRCodeModal data={qrModalData} onClose={() => setQrModalData(null)} />}
+      {pinModal && (
+        <PinPad
+          mode={pinModal.mode}
+          title={pinModal.title}
+          onSuccess={pinModal.onSuccess}
+          onCancel={() => setPinModal(null)}
+        />
+      )}
 
       <main className="flex-1 overflow-y-auto px-4 py-6 max-w-4xl mx-auto w-full">
         {view === 'dashboard' && (
@@ -255,6 +299,30 @@ const App: React.FC = () => {
             onPitClick={() => setView('pit')}
             onMatchClick={() => setView('match')}
             onShowMatchQR={(m) => setQrModalData(encodeMatchData(m))}
+            onEditMatch={(m) => {
+              requirePin((pin) => {
+                setEditingMatch(m);
+                setView('match');
+              });
+            }}
+            onDeleteMatch={(m) => {
+              requirePin((pin) => {
+                if (!confirm(`Delete Match #${m.matchNumber}?`)) return;
+                deleteMatchData(m.id, pin).catch(() => {});
+                setMatchData(prev => prev.filter(x => x.id !== m.id));
+              });
+            }}
+            onDeletePit={() => {
+              requirePin((pin) => {
+                if (!confirm(`Delete pit data for Team ${selectedTeam.number}?`)) return;
+                deletePitData(selectedTeam.number, pin).catch(() => {});
+                setPitData(prev => {
+                  const next = { ...prev };
+                  delete next[selectedTeam.number];
+                  return next;
+                });
+              });
+            }}
           />
         )}
 
@@ -277,16 +345,24 @@ const App: React.FC = () => {
         {view === 'match' && selectedTeam && (
           <MatchScoutingForm
             team={selectedTeam}
+            initialData={editingMatch || undefined}
             onSave={(d) => {
-              setMatchData(prev => [d, ...prev]);
-              saveMatchData(d).catch(() => {
-                addToSyncQueue({ type: 'match', data: d });
-                setPendingSync(getSyncQueue().length);
-              });
-              setQrModalData(encodeMatchData(d));
+              if (editingMatch) {
+                const pin = getCachedPin();
+                setMatchData(prev => prev.map(m => m.id === d.id ? d : m));
+                if (pin) updateMatchDataOnServer(d, pin).catch(() => {});
+                setEditingMatch(null);
+              } else {
+                setMatchData(prev => [d, ...prev]);
+                saveMatchData(d).catch(() => {
+                  addToSyncQueue({ type: 'match', data: d });
+                  setPendingSync(getSyncQueue().length);
+                });
+                setQrModalData(encodeMatchData(d));
+              }
               setView('team_detail');
             }}
-            onCancel={() => setView('team_detail')}
+            onCancel={() => { setEditingMatch(null); setView('team_detail'); }}
           />
         )}
 
@@ -324,12 +400,24 @@ const App: React.FC = () => {
         {view === 'settings' && (
           <ConfigView
             matchData={matchData}
+            isConnected={isConnected}
             onShowQR={(data) => setQrModalData(data)}
             onClearData={() => {
-              setPitData({});
-              setMatchData([]);
-              localStorage.removeItem(STORAGE_KEY_PIT);
-              localStorage.removeItem(STORAGE_KEY_MATCH);
+              requirePin((pin) => {
+                if (!isConnected) {
+                  alert('Cannot clear all data while offline. Server data would remain.');
+                  return;
+                }
+                if (!confirm('This will permanently delete ALL pit and match data from the server and this device. Are you sure?')) return;
+                clearAllServerData(pin).then(() => {
+                  setPitData({});
+                  setMatchData([]);
+                  localStorage.removeItem(STORAGE_KEY_PIT);
+                  localStorage.removeItem(STORAGE_KEY_MATCH);
+                }).catch(() => {
+                  alert('Failed to clear server data.');
+                });
+              });
             }}
           />
         )}
@@ -352,7 +440,10 @@ const NavButton: React.FC<{ active: boolean, onClick: () => void, icon: React.Re
   </button>
 );
 
-const TeamDetail: React.FC<{ team: Team, pit?: PitData, matches: MatchData[], onBack: () => void, onPitClick: () => void, onMatchClick: () => void, onShowMatchQR: (m: MatchData) => void }> = ({ team, pit, matches, onBack, onPitClick, onMatchClick, onShowMatchQR }) => (
+const TeamDetail: React.FC<{
+  team: Team, pit?: PitData, matches: MatchData[], onBack: () => void, onPitClick: () => void, onMatchClick: () => void,
+  onShowMatchQR: (m: MatchData) => void, onEditMatch: (m: MatchData) => void, onDeleteMatch: (m: MatchData) => void, onDeletePit: () => void
+}> = ({ team, pit, matches, onBack, onPitClick, onMatchClick, onShowMatchQR, onEditMatch, onDeleteMatch, onDeletePit }) => (
   <div className="space-y-8 animate-in fade-in duration-300">
     <button onClick={onBack} className="flex items-center gap-2 text-slate-400 font-semibold"><ArrowLeft className="w-5 h-5" /> Dashboard</button>
     <div className="bg-slate-900 border-2 border-slate-800 rounded-3xl p-8 shadow-2xl">
@@ -366,6 +457,13 @@ const TeamDetail: React.FC<{ team: Team, pit?: PitData, matches: MatchData[], on
       </Button>
       <Button size="lg" variant="outline" className="flex-col h-32 gap-3" onClick={onMatchClick}><Plus className="w-8 h-8 text-blue-500" /> Log Match</Button>
     </div>
+    {pit && (
+      <div className="flex justify-end">
+        <button onClick={onDeletePit} className="text-xs text-red-400/60 hover:text-red-400 transition-colors flex items-center gap-1">
+          <Trash2 className="w-3 h-3" /> Delete Pit Data
+        </button>
+      </div>
+    )}
     <div className="space-y-4">
       <h3 className="font-header text-2xl text-slate-200">History</h3>
       {matches.length === 0 ? <p className="text-slate-600 italic">No matches logged.</p> : (
@@ -382,6 +480,7 @@ const TeamDetail: React.FC<{ team: Team, pit?: PitData, matches: MatchData[], on
               <button onClick={() => onShowMatchQR(m)} className="p-2 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 transition-colors">
                 <QrCode className="w-5 h-5 text-blue-400" />
               </button>
+              <CardMenu onEdit={() => onEditMatch(m)} onDelete={() => onDeleteMatch(m)} />
             </div>
           ))}
         </div>
@@ -510,52 +609,52 @@ const PitScoutingForm: React.FC<{ team: Team, initialData?: PitData, onSave: (d:
   );
 };
 
-const MatchScoutingForm: React.FC<{ team: Team, onSave: (d: MatchData) => void, onCancel: () => void }> = ({ team, onSave, onCancel }) => {
+const MatchScoutingForm: React.FC<{ team: Team, initialData?: MatchData, onSave: (d: MatchData) => void, onCancel: () => void }> = ({ team, initialData, onSave, onCancel }) => {
   const [phase, setPhase] = useState<'pre' | 'auto' | 'tele' | 'post'>('pre');
-  const [matchNum, setMatchNum] = useState<number>(1);
-  const [startingPos, setStartingPos] = useState<StartingPosition>('Middle');
-  const [noShow, setNoShow] = useState(false);
-  
+  const [matchNum, setMatchNum] = useState<number>(initialData?.matchNumber ?? 1);
+  const [startingPos, setStartingPos] = useState<StartingPosition>(initialData?.startingPosition ?? 'Middle');
+  const [noShow, setNoShow] = useState(initialData?.noShow ?? false);
+
   // Auto
-  const [autoRole, setAutoRole] = useState<MatchRole>(MatchRole.SHOOTER);
-  const [autoAccuracy, setAutoAccuracy] = useState<Accuracy>(Accuracy.BETWEEN_50_80);
-  const [autoLeave, setAutoLeave] = useState(false);
-  const [autoClimbLevel, setAutoClimbLevel] = useState(0);
+  const [autoRole, setAutoRole] = useState<MatchRole>(initialData?.autoRole ?? MatchRole.SHOOTER);
+  const [autoAccuracy, setAutoAccuracy] = useState<Accuracy>(initialData?.autoAccuracy ?? Accuracy.BETWEEN_50_80);
+  const [autoLeave, setAutoLeave] = useState(initialData?.autoLeave ?? false);
+  const [autoClimbLevel, setAutoClimbLevel] = useState(initialData?.autoClimbLevel ?? 0);
 
   // Teleop
-  const [teleopRole, setTeleopRole] = useState<MatchRole>(MatchRole.SHOOTER);
-  const [teleopAccuracy, setTeleopAccuracy] = useState<Accuracy>(Accuracy.BETWEEN_50_80);
-  const [teleopCollection, setTeleopCollection] = useState<string[]>([]);
+  const [teleopRole, setTeleopRole] = useState<MatchRole>(initialData?.teleopRole ?? MatchRole.SHOOTER);
+  const [teleopAccuracy, setTeleopAccuracy] = useState<Accuracy>(initialData?.teleopAccuracy ?? Accuracy.BETWEEN_50_80);
+  const [teleopCollection, setTeleopCollection] = useState<string[]>(initialData?.teleopCollection ?? []);
 
   // Post/Endgame
-  const [offenseSkill, setOffenseSkill] = useState(3);
-  const [defenseSkill, setDefenseSkill] = useState(3);
-  const [transitionQuickness, setTransitionQuickness] = useState(3);
-  const [primaryZone, setPrimaryZone] = useState('Neutral');
-  const [climbLevel, setClimbLevel] = useState(0);
-  const [died, setDied] = useState(false);
-  const [minorFouls, setMinorFouls] = useState(0);
-  const [majorFouls, setMajorFouls] = useState(0);
-  const [comments, setComments] = useState('');
+  const [offenseSkill, setOffenseSkill] = useState(initialData?.offensiveSkill ?? 3);
+  const [defenseSkill, setDefenseSkill] = useState(initialData?.defensiveSkill ?? 3);
+  const [transitionQuickness, setTransitionQuickness] = useState(initialData?.transitionQuickness ?? 3);
+  const [primaryZone, setPrimaryZone] = useState(initialData?.primaryZone ?? 'Neutral');
+  const [climbLevel, setClimbLevel] = useState(initialData?.climbLevel ?? 0);
+  const [died, setDied] = useState(initialData?.died ?? false);
+  const [minorFouls, setMinorFouls] = useState(initialData?.minorFouls ?? 0);
+  const [majorFouls, setMajorFouls] = useState(initialData?.majorFouls ?? 0);
+  const [comments, setComments] = useState(initialData?.comments ?? '');
 
   // Alliance Outcomes
-  const [energized, setEnergized] = useState(false);
-  const [supercharged, setSupercharged] = useState(false);
-  const [traversal, setTraversal] = useState(false);
-  const [wonMatch, setWonMatch] = useState(false);
+  const [energized, setEnergized] = useState(initialData?.energized ?? false);
+  const [supercharged, setSupercharged] = useState(initialData?.supercharged ?? false);
+  const [traversal, setTraversal] = useState(initialData?.traversal ?? false);
+  const [wonMatch, setWonMatch] = useState(initialData?.wonMatch ?? false);
 
   const handleSave = () => {
     onSave({
-      id: crypto.randomUUID(),
+      id: initialData?.id ?? crypto.randomUUID(),
       matchNumber: matchNum,
       teamNumber: team.number,
       startingPosition: startingPos,
       noShow,
       autoRole, autoAccuracy, autoLeave, autoClimbLevel,
       teleopRole, teleopAccuracy, teleopCollection,
-      climbLevel, died, minorFouls, majorFouls, 
-      offensiveSkill: offenseSkill, 
-      defensiveSkill: defenseSkill, 
+      climbLevel, died, minorFouls, majorFouls,
+      offensiveSkill: offenseSkill,
+      defensiveSkill: defenseSkill,
       transitionQuickness, primaryZone,
       energized, supercharged, traversal, wonMatch,
       comments,
@@ -591,7 +690,7 @@ const MatchScoutingForm: React.FC<{ team: Team, onSave: (d: MatchData) => void, 
   return (
     <div className="space-y-8 pb-32">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-header">LOG MATCH: {team.number}</h2>
+        <h2 className="text-2xl font-header">{initialData ? 'EDIT' : 'LOG'} MATCH: {team.number}</h2>
         <Button variant="ghost" size="sm" onClick={onCancel}>Discard</Button>
       </div>
 
@@ -718,7 +817,7 @@ const MatchScoutingForm: React.FC<{ team: Team, onSave: (d: MatchData) => void, 
 
       <div className="fixed bottom-24 left-4 right-4 z-40 flex gap-3">
         {phase === 'post' ? (
-          <Button size="lg" className="w-full h-16 shadow-2xl" onClick={handleSave}>Submit Match Report</Button>
+          <Button size="lg" className="w-full h-16 shadow-2xl" onClick={handleSave}>{initialData ? 'Save Changes' : 'Submit Match Report'}</Button>
         ) : (
           <Button size="lg" className="w-full h-16 shadow-2xl" onClick={() => {
             if (phase === 'pre') setPhase(noShow ? 'post' : 'auto');
@@ -902,9 +1001,7 @@ const Counter: React.FC<{ label: string, value: number, onChange: (v: number) =>
   </div>
 );
 
-const ConfigView: React.FC<{ matchData: MatchData[], onShowQR: (data: string) => void, onClearData: () => void }> = ({ matchData, onShowQR, onClearData }) => {
-  const [confirmClear, setConfirmClear] = useState(false);
-
+const ConfigView: React.FC<{ matchData: MatchData[], isConnected: boolean, onShowQR: (data: string) => void, onClearData: () => void }> = ({ matchData, isConnected, onShowQR, onClearData }) => {
   return (
     <div className="space-y-8 pb-12">
       <h2 className="text-3xl font-header text-white">CONFIG</h2>
@@ -939,23 +1036,15 @@ const ConfigView: React.FC<{ matchData: MatchData[], onShowQR: (data: string) =>
 
       <div className="space-y-4 pt-6 border-t border-slate-800">
         <h3 className="text-xs font-bold uppercase tracking-widest text-red-400">Danger Zone</h3>
-        {!confirmClear ? (
-          <Button variant="danger" size="lg" className="w-full" onClick={() => setConfirmClear(true)}>
-            Clear All Local Data
-          </Button>
-        ) : (
-          <div className="space-y-3">
-            <p className="text-sm text-red-400">This deletes all pit and match data from this device. Are you sure?</p>
-            <div className="flex gap-3">
-              <Button variant="danger" className="flex-1" onClick={() => { onClearData(); setConfirmClear(false); }}>
-                Yes, Delete Everything
-              </Button>
-              <Button variant="secondary" className="flex-1" onClick={() => setConfirmClear(false)}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
+        <Button variant="danger" size="lg" className="w-full" onClick={onClearData} disabled={!isConnected}>
+          <Trash2 className="w-5 h-5 mr-2" />
+          Clear All Data
+        </Button>
+        <p className="text-xs text-slate-500">
+          {isConnected
+            ? 'Deletes all pit and match data from the server and all devices. Requires PIN.'
+            : 'Must be online to clear all data (server data would remain).'}
+        </p>
       </div>
     </div>
   );

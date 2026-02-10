@@ -5,6 +5,8 @@ import { fileURLToPath } from 'url';
 import pitRoutes from './routes/pit.js';
 import matchRoutes from './routes/match.js';
 import syncRoutes from './routes/sync.js';
+import pinRoutes from './routes/pin.js';
+import adminRoutes from './routes/admin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -19,9 +21,11 @@ app.get('/api/health', (_req, res) => {
 });
 
 // API routes
+app.use('/api', pinRoutes);
 app.use('/api', pitRoutes);
 app.use('/api', matchRoutes);
 app.use('/api', syncRoutes);
+app.use('/api', adminRoutes);
 
 // Serve built frontend in production
 const distPath = path.join(__dirname, '..', 'dist');

@@ -27,6 +27,11 @@ db.exec(`
     source_device TEXT,
     UNIQUE(match_number, team_number, timestamp)
   );
+
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
 
 export const upsertPitData = db.prepare(`
@@ -46,6 +51,27 @@ export const insertMatchData = db.prepare(`
 `);
 
 export const getAllMatchData = db.prepare('SELECT data FROM match_data ORDER BY timestamp DESC');
+
+export const getSetting = db.prepare('SELECT value FROM app_settings WHERE key = ?');
+export const setSetting = db.prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (@key, @value)');
+
+export const deletePitByTeam = db.prepare('DELETE FROM pit_data WHERE team_number = ?');
+export const deleteMatchById = db.prepare('DELETE FROM match_data WHERE id = ?');
+
+export const updatePitData = db.prepare(`
+  UPDATE pit_data SET data = @data, last_updated = @last_updated, source_device = @source_device
+  WHERE team_number = @team_number
+`);
+
+export const updateMatchData = db.prepare(`
+  UPDATE match_data SET data = @data, match_number = @match_number, team_number = @team_number,
+  timestamp = @timestamp, source_device = @source_device WHERE id = @id
+`);
+
+export const clearAllData = db.transaction(() => {
+  db.exec('DELETE FROM pit_data');
+  db.exec('DELETE FROM match_data');
+});
 
 export const bulkSync = db.transaction((items: { type: 'pit' | 'match'; payload: any }[]) => {
   for (const item of items) {

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { getAllPitData, upsertPitData } from '../db.js';
+import { getAllPitData, upsertPitData, updatePitData, deletePitByTeam } from '../db.js';
+import { pinAuth } from '../middleware/pinAuth.js';
 
 const router = Router();
 
@@ -24,6 +25,32 @@ router.post('/pit-data', (req: Request, res: Response) => {
     last_updated: pitData.lastUpdated || Date.now(),
     source_device: req.headers['x-device-id'] || 'unknown',
   });
+  res.json({ ok: true });
+});
+
+router.put('/pit-data/:teamNumber', pinAuth, (req: Request, res: Response) => {
+  const teamNumber = parseInt(req.params.teamNumber as string);
+  const pitData = req.body;
+  if (!pitData || !teamNumber) {
+    res.status(400).json({ error: 'Missing data' });
+    return;
+  }
+  updatePitData.run({
+    team_number: teamNumber,
+    data: JSON.stringify(pitData),
+    last_updated: pitData.lastUpdated || Date.now(),
+    source_device: req.headers['x-device-id'] || 'unknown',
+  });
+  res.json({ ok: true });
+});
+
+router.delete('/pit-data/:teamNumber', pinAuth, (req: Request, res: Response) => {
+  const teamNumber = parseInt(req.params.teamNumber as string);
+  if (!teamNumber) {
+    res.status(400).json({ error: 'Invalid team number' });
+    return;
+  }
+  deletePitByTeam.run(teamNumber);
   res.json({ ok: true });
 });
 

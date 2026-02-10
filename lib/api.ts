@@ -64,3 +64,45 @@ export async function syncQueue(items: { type: 'pit' | 'match'; data: any }[]): 
   });
   if (!res.ok) throw new Error('Failed to sync');
 }
+
+export async function updatePitData(data: PitData, pin: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/pit-data/${data.teamNumber}`, {
+    method: 'PUT',
+    headers: { ...headers(), 'X-Pin': pin },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error('Failed to update pit data');
+}
+
+export async function deletePitData(teamNumber: number, pin: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/pit-data/${teamNumber}`, {
+    method: 'DELETE',
+    headers: { ...headers(), 'X-Pin': pin },
+  });
+  if (!res.ok) throw new Error('Failed to delete pit data');
+}
+
+export async function updateMatchDataOnServer(data: MatchData, pin: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/match-data/${data.id}`, {
+    method: 'PUT',
+    headers: { ...headers(), 'X-Pin': pin },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error('Failed to update match data');
+}
+
+export async function deleteMatchData(id: string, pin: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/match-data/${id}`, {
+    method: 'DELETE',
+    headers: { ...headers(), 'X-Pin': pin },
+  });
+  if (!res.ok) throw new Error('Failed to delete match data');
+}
+
+export async function clearAllServerData(pin: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/admin/all-data`, {
+    method: 'DELETE',
+    headers: { ...headers(), 'X-Pin': pin },
+  });
+  if (!res.ok) throw new Error('Failed to clear server data');
+}
