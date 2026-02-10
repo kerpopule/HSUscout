@@ -144,10 +144,8 @@ const App: React.FC = () => {
     <div className="min-h-screen flex flex-col pb-24 text-slate-100">
       <header className="sticky top-0 z-50 bg-slate-950/80 backdrop-blur-md border-b border-slate-800 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="bg-blue-600 p-2 rounded-lg">
-            <Zap className="w-6 h-6 text-white" />
-          </div>
-          <h1 className="font-header text-2xl tracking-tight leading-none">SMOKY SCOUT PRO</h1>
+          <img src="/team-logo.png" alt="HSU Werx 8778" className="w-10 h-10 rounded-lg" />
+          <h1 className="font-header text-2xl tracking-tight leading-none">HSUWERX 8778</h1>
         </div>
         <div className="flex items-center gap-3">
           <SyncStatus isConnected={isConnected} pendingCount={pendingSync} />
