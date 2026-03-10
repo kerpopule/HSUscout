@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { getSetting, getTbaCache, setSetting, setTbaCache } from '../db.js';
 
 const TBA_API_BASE = 'https://www.thebluealliance.com/api/v3';
+const TBA_API_KEY = '2xgxQGrdjUcdrWUn4hMqDVfulkITTOCR9SPA0L85Igw9KCJ4mEIhtydjv20LyJr9';
 const TBA_CONTEXT_KEY = 'tba_context';
 
 const router = Router();
@@ -36,14 +37,7 @@ function buildCacheKey(path: string, query?: string): string {
 }
 
 async function fetchFromTba(cacheKey: string, endpoint: string, ifNoneMatch?: string | null): Promise<{ data: any; fromCache: boolean }> {
-  const apiKey = process.env.TBA_API_KEY?.trim();
-  if (!apiKey) {
-    const cache = getTbaCache.get(cacheKey) as TbaCacheRow | undefined;
-    if (!cache) {
-      throw new Error('Missing TBA_API_KEY in server environment.');
-    }
-    return { data: JSON.parse(cache.data), fromCache: true };
-  }
+  const apiKey = process.env.TBA_API_KEY?.trim() || TBA_API_KEY;
 
   const headers: Record<string, string> = {
     'X-TBA-Auth-Key': apiKey,
