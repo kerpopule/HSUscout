@@ -36,6 +36,17 @@ The app has two parts that both need to be running:
    http://localhost:3000
    ```
 
+### The Blue Alliance key (optional, recommended)
+
+If you want live event and team syncing, provide `TBA_API_KEY` when starting the backend:
+
+```bash
+export TBA_API_KEY=<your_tba_api_key>
+npm run dev:server
+```
+
+You can skip this for now and continue with the built-in Smoky Mountain teams.
+
 ### Testing Checklist
 
 **✅ Connection Check**

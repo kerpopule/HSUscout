@@ -32,6 +32,14 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS tba_cache (
+    cache_key TEXT PRIMARY KEY,
+    etag TEXT,
+    data TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    fetched_at INTEGER NOT NULL
+  );
 `);
 
 export const upsertPitData = db.prepare(`
@@ -54,6 +62,17 @@ export const getAllMatchData = db.prepare('SELECT data FROM match_data ORDER BY 
 
 export const getSetting = db.prepare('SELECT value FROM app_settings WHERE key = ?');
 export const setSetting = db.prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (@key, @value)');
+
+export const getTbaCache = db.prepare('SELECT etag, data, status, fetched_at FROM tba_cache WHERE cache_key = ?');
+export const setTbaCache = db.prepare(`
+  INSERT INTO tba_cache (cache_key, etag, data, status, fetched_at)
+  VALUES (@cache_key, @etag, @data, @status, @fetched_at)
+  ON CONFLICT(cache_key) DO UPDATE SET
+    etag = excluded.etag,
+    data = excluded.data,
+    status = excluded.status,
+    fetched_at = excluded.fetched_at
+`);
 
 export const deletePitByTeam = db.prepare('DELETE FROM pit_data WHERE team_number = ?');
 export const deleteMatchById = db.prepare('DELETE FROM match_data WHERE id = ?');

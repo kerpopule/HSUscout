@@ -24,8 +24,6 @@ export const SMOKY_MOUNTAIN_TEAMS: Team[] = [
   { number: 3984, name: "Topper Robotics", location: "Johnson City, Tennessee" },
   { number: 4013, name: "Clockwork Mania", location: "Orlando, Florida" },
   { number: 4020, name: "Cyber Tribe", location: "Kingsport, Tennessee" },
-  { number: 4013, name: "Clockwork Mania", location: "Orlando, Florida" },
-  { number: 4020, name: "Cyber Tribe", location: "Kingsport, Tennessee" },
   { number: 4065, name: "Nerds of Prey", location: "Minneola, Florida" },
   { number: 4265, name: "Secret City Wildbots", location: "Oak Ridge, Tennessee" },
   { number: 4504, name: "B. C. Robotics", location: "Maryville, Tennessee" },

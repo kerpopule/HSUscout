@@ -2,9 +2,32 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Team, PitData, MatchData, MatchRole, Accuracy, StartingPosition } from './types';
 import { SMOKY_MOUNTAIN_TEAMS, DRIVETRAIN_TYPES, MOTOR_TYPES, ARCHETYPES, CLIMB_CAPABILITIES } from './constants';
-import { savePitData, saveMatchData, updatePitData, deletePitData, updateMatchDataOnServer, deleteMatchData, clearAllServerData } from './lib/api';
+import {
+  savePitData,
+  saveMatchData,
+  updatePitData,
+  deletePitData,
+  updateMatchDataOnServer,
+  deleteMatchData,
+  clearAllServerData,
+  fetchTbaEventsByYear,
+  fetchTbaTeamsForEvent,
+  fetchTbaMatchesForEvent,
+  fetchTbaContext,
+  saveTbaContext,
+  fetchTbaRankings,
+  fetchTbaOprs,
+  fetchTbaAlliances,
+  fetchTbaTeamEvents,
+  fetchTbaTeamMatches,
+  TBAEventSimple,
+  TBARankings,
+  TBAOprs,
+  TBAAlliance,
+  TBAMatch,
+} from './lib/api';
 import { addToSyncQueue, getSyncQueue, startSyncService } from './lib/sync';
-import { encodeMatchData, encodeBulkMatchData } from './lib/qr-encode';
+import { encodeMatchData, encodeBulkMatchData, encodePitData, encodeBulkPitData, encodeAllData, DecodedQRData } from './lib/qr-encode';
 import { pinStatus, pinSetup, pinVerify, getCachedPin, cachePin } from './lib/pin';
 import { Button } from './components/Button';
 import { Input, Toggle, Select, RadioGroup } from './components/Input';
@@ -54,25 +77,33 @@ import {
   Hand,
   ScanLine,
   QrCode,
-  Share2
+  Share2,
+  Globe,
+  ArrowUpDown
 } from 'lucide-react';
 
 const STORAGE_KEY_PIT = 'smoky_scout_pit_v3';
 const STORAGE_KEY_MATCH = 'smoky_scout_match_v6';
+const STORAGE_KEY_TBA_CONTEXT = 'smoky_scout_tba_context_v1';
 
-type View = 'dashboard' | 'pit' | 'match' | 'settings' | 'team_detail' | 'strategy' | 'scanner';
+type View = 'dashboard' | 'pit' | 'match' | 'settings' | 'team_detail' | 'strategy' | 'scanner' | 'tba';
 
 const App: React.FC = () => {
   const [view, setView] = useState<View>('dashboard');
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
   const [pitData, setPitData] = useState<Record<number, PitData>>({});
   const [matchData, setMatchData] = useState<MatchData[]>([]);
+  const [tbaEvents, setTbaEvents] = useState<TBAEventSimple[]>([]);
+  const [selectedSeason, setSelectedSeason] = useState<number>(new Date().getFullYear());
+  const [selectedEventKey, setSelectedEventKey] = useState<string>('');
+  const [teamSource, setTeamSource] = useState<Team[]>(SMOKY_MOUNTAIN_TEAMS);
   const [searchQuery, setSearchQuery] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [pendingSync, setPendingSync] = useState(getSyncQueue().length);
   const [qrModalData, setQrModalData] = useState<string | null>(null);
   const [pinModal, setPinModal] = useState<{ mode: 'setup' | 'verify'; onSuccess: (pin: string) => void; title?: string } | null>(null);
   const [editingMatch, setEditingMatch] = useState<MatchData | null>(null);
+  const [tbaLoading, setTbaLoading] = useState({ events: false, teams: false });
 
   const requirePin = useCallback((callback: (pin: string) => void, title?: string) => {
     const cached = getCachedPin();
@@ -108,9 +139,96 @@ const App: React.FC = () => {
   useEffect(() => {
     const savedPit = localStorage.getItem(STORAGE_KEY_PIT);
     const savedMatch = localStorage.getItem(STORAGE_KEY_MATCH);
+    const savedContext = localStorage.getItem(STORAGE_KEY_TBA_CONTEXT);
     if (savedPit) setPitData(JSON.parse(savedPit));
     if (savedMatch) setMatchData(JSON.parse(savedMatch));
+    if (savedContext) {
+      try {
+        const parsed = JSON.parse(savedContext) as { season?: number; eventKey?: string };
+        if (typeof parsed.season === 'number') setSelectedSeason(parsed.season);
+        if (typeof parsed.eventKey === 'string') {
+          setSelectedEventKey(parsed.eventKey);
+        }
+      } catch {
+        // ignore invalid cache
+      }
+    }
+
+    fetchTbaContext().then((ctx) => {
+      if (ctx.season) setSelectedSeason(ctx.season);
+      if (ctx.eventKey) {
+        setSelectedEventKey(ctx.eventKey);
+      }
+    }).catch(() => {
+      // no server context available yet
+    });
   }, []);
+
+  useEffect(() => {
+    let canceled = false;
+    setTbaLoading(prev => ({ ...prev, events: true }));
+    fetchTbaEventsByYear(selectedSeason)
+      .then((events) => {
+        if (canceled) return;
+        setTbaEvents(events);
+      })
+      .catch(() => {
+        if (!canceled) setTbaEvents([]);
+      })
+      .finally(() => {
+        if (!canceled) setTbaLoading(prev => ({ ...prev, events: false }));
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [selectedSeason]);
+
+  useEffect(() => {
+    if (!selectedEventKey) return;
+    if (!tbaEvents.some(event => event.key === selectedEventKey)) {
+      setSelectedEventKey('');
+    }
+  }, [selectedEventKey, tbaEvents]);
+
+  useEffect(() => {
+    let canceled = false;
+    const applyTeamList = (teams: Team[]) => {
+      const deduped = new Map<number, Team>();
+      for (const t of teams) {
+        if (!deduped.has(t.number)) deduped.set(t.number, t);
+      }
+      const merged = Array.from(deduped.values()).sort((a, b) => a.number - b.number);
+      setTeamSource(merged);
+    };
+
+    if (!selectedEventKey) {
+      applyTeamList(SMOKY_MOUNTAIN_TEAMS);
+      return;
+    }
+
+    setTbaLoading(prev => ({ ...prev, teams: true }));
+    fetchTbaTeamsForEvent(selectedEventKey)
+      .then((teams) => {
+        if (!canceled) applyTeamList(teams);
+      })
+      .catch(() => {
+        if (!canceled) {
+          applyTeamList(SMOKY_MOUNTAIN_TEAMS);
+        }
+      })
+      .finally(() => {
+        if (!canceled) setTbaLoading(prev => ({ ...prev, teams: false }));
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [selectedEventKey]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_TBA_CONTEXT, JSON.stringify({ season: selectedSeason, eventKey: selectedEventKey }));
+  }, [selectedSeason, selectedEventKey]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_PIT, JSON.stringify(pitData));
@@ -163,6 +281,22 @@ const App: React.FC = () => {
     setView('team_detail');
   };
 
+  const handleTbaSeasonChange = (season: number) => {
+    void handleTbaEventChange(season, null);
+  };
+
+  const handleTbaEventChange = async (season: number, eventKey: string | null) => {
+    setSelectedSeason(season);
+    setSelectedEventKey(eventKey || '');
+    setSelectedTeam(null);
+    try {
+      await saveTbaContext({ season, eventKey });
+    } catch {
+      // continue with local context if server write fails
+    }
+    localStorage.setItem(STORAGE_KEY_TBA_CONTEXT, JSON.stringify({ season, eventKey }));
+  };
+
   const getRoleIcon = (role: string) => {
     switch(role) {
       case 'Shooter': return <Target className="w-3 h-3" />;
@@ -172,9 +306,11 @@ const App: React.FC = () => {
     }
   };
 
-  const filteredTeams = SMOKY_MOUNTAIN_TEAMS.filter(t => 
+  const filteredTeams = teamSource.filter(t => 
     t.number.toString().includes(searchQuery) || t.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const sortedTeamSource = [...teamSource].sort((a, b) => a.number - b.number);
 
   return (
     <div className="min-h-screen flex flex-col pb-24 text-slate-100">
@@ -299,6 +435,7 @@ const App: React.FC = () => {
             onPitClick={() => setView('pit')}
             onMatchClick={() => setView('match')}
             onShowMatchQR={(m) => setQrModalData(encodeMatchData(m))}
+            onShowPitQR={(p) => setQrModalData(encodePitData(p))}
             onEditMatch={(m) => {
               requirePin((pin) => {
                 setEditingMatch(m);
@@ -366,31 +503,49 @@ const App: React.FC = () => {
           />
         )}
 
-        {view === 'strategy' && <StrategyLab pitData={pitData} matchData={matchData} />}
+        {view === 'strategy' && <StrategyLab pitData={pitData} matchData={matchData} availableTeams={sortedTeamSource} selectedSeason={selectedSeason} />}
 
         {view === 'scanner' && (
           <QRScanner
-            onImport={(matches) => {
-              setMatchData(prev => {
-                let updated = [...prev];
-                for (const d of matches) {
-                  const idx = updated.findIndex(m => m.matchNumber === d.matchNumber && m.teamNumber === d.teamNumber);
-                  if (idx >= 0) {
-                    // Smart merge: newer timestamp wins
-                    if (d.timestamp > updated[idx].timestamp) {
-                      updated[idx] = d;
+            onImport={(decoded) => {
+              if (decoded.matches.length > 0) {
+                setMatchData(prev => {
+                  let updated = [...prev];
+                  for (const d of decoded.matches) {
+                    const idx = updated.findIndex(m => m.matchNumber === d.matchNumber && m.teamNumber === d.teamNumber);
+                    if (idx >= 0) {
+                      if (d.timestamp > updated[idx].timestamp) {
+                        updated[idx] = d;
+                      }
+                    } else {
+                      updated = [d, ...updated];
                     }
-                  } else {
-                    updated = [d, ...updated];
                   }
-                }
-                return updated;
-              });
-              for (const d of matches) {
-                saveMatchData(d).catch(() => {
-                  addToSyncQueue({ type: 'match', data: d });
-                  setPendingSync(getSyncQueue().length);
+                  return updated;
                 });
+                for (const d of decoded.matches) {
+                  saveMatchData(d).catch(() => {
+                    addToSyncQueue({ type: 'match', data: d });
+                    setPendingSync(getSyncQueue().length);
+                  });
+                }
+              }
+              if (decoded.pits.length > 0) {
+                setPitData(prev => {
+                  const next = { ...prev };
+                  for (const p of decoded.pits) {
+                    if (!next[p.teamNumber] || p.lastUpdated > next[p.teamNumber].lastUpdated) {
+                      next[p.teamNumber] = p;
+                    }
+                  }
+                  return next;
+                });
+                for (const p of decoded.pits) {
+                  savePitData(p).catch(() => {
+                    addToSyncQueue({ type: 'pit', data: p });
+                    setPendingSync(getSyncQueue().length);
+                  });
+                }
               }
             }}
             onBack={() => setView('dashboard')}
@@ -400,7 +555,13 @@ const App: React.FC = () => {
         {view === 'settings' && (
           <ConfigView
             matchData={matchData}
+            pitData={pitData}
             isConnected={isConnected}
+            events={tbaEvents}
+            selectedSeason={selectedSeason}
+            selectedEventKey={selectedEventKey}
+            isLoadingTba={tbaLoading}
+            onSetSeason={handleTbaSeasonChange}
             onShowQR={(data) => setQrModalData(data)}
             onClearData={() => {
               requirePin((pin) => {
@@ -421,11 +582,22 @@ const App: React.FC = () => {
             }}
           />
         )}
+
+        {view === 'tba' && (
+          <TBAView
+            eventKey={selectedEventKey}
+            events={tbaEvents}
+            selectedSeason={selectedSeason}
+            isLoadingEvents={tbaLoading.events}
+            onSetEvent={handleTbaEventChange}
+          />
+        )}
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 bg-slate-950/80 backdrop-blur-xl border-t border-slate-800 px-6 py-4 flex justify-around items-center z-50">
         <NavButton active={view === 'dashboard' || view === 'team_detail'} onClick={() => setView('dashboard')} icon={<Users className="w-6 h-6" />} label="Teams" />
         <NavButton active={view === 'strategy'} onClick={() => setView('strategy')} icon={<BrainCircuit className="w-6 h-6" />} label="Strategy" />
+        <NavButton active={view === 'tba'} onClick={() => setView('tba')} icon={<Globe className="w-6 h-6" />} label="TBA" />
         <NavButton active={view === 'scanner'} onClick={() => setView('scanner')} icon={<ScanLine className="w-6 h-6" />} label="Scan" />
         <NavButton active={view === 'settings'} onClick={() => setView('settings')} icon={<Settings className="w-6 h-6" />} label="Config" />
       </nav>
@@ -442,8 +614,8 @@ const NavButton: React.FC<{ active: boolean, onClick: () => void, icon: React.Re
 
 const TeamDetail: React.FC<{
   team: Team, pit?: PitData, matches: MatchData[], onBack: () => void, onPitClick: () => void, onMatchClick: () => void,
-  onShowMatchQR: (m: MatchData) => void, onEditMatch: (m: MatchData) => void, onDeleteMatch: (m: MatchData) => void, onDeletePit: () => void
-}> = ({ team, pit, matches, onBack, onPitClick, onMatchClick, onShowMatchQR, onEditMatch, onDeleteMatch, onDeletePit }) => (
+  onShowMatchQR: (m: MatchData) => void, onShowPitQR: (p: PitData) => void, onEditMatch: (m: MatchData) => void, onDeleteMatch: (m: MatchData) => void, onDeletePit: () => void
+}> = ({ team, pit, matches, onBack, onPitClick, onMatchClick, onShowMatchQR, onShowPitQR, onEditMatch, onDeleteMatch, onDeletePit }) => (
   <div className="space-y-8 animate-in fade-in duration-300">
     <button onClick={onBack} className="flex items-center gap-2 text-slate-400 font-semibold"><ArrowLeft className="w-5 h-5" /> Dashboard</button>
     <div className="bg-slate-900 border-2 border-slate-800 rounded-3xl p-8 shadow-2xl">
@@ -458,7 +630,10 @@ const TeamDetail: React.FC<{
       <Button size="lg" variant="outline" className="flex-col h-32 gap-3" onClick={onMatchClick}><Plus className="w-8 h-8 text-blue-500" /> Log Match</Button>
     </div>
     {pit && (
-      <div className="flex justify-end">
+      <div className="flex justify-between items-center">
+        <button onClick={() => onShowPitQR(pit)} className="text-xs text-blue-400/60 hover:text-blue-400 transition-colors flex items-center gap-1">
+          <QrCode className="w-3 h-3" /> Share Pit Data
+        </button>
         <button onClick={onDeletePit} className="text-xs text-red-400/60 hover:text-red-400 transition-colors flex items-center gap-1">
           <Trash2 className="w-3 h-3" /> Delete Pit Data
         </button>
@@ -698,7 +873,7 @@ const MatchScoutingForm: React.FC<{ team: Team, initialData?: MatchData, onSave:
         <button onClick={() => setPhase('pre')} className={`${navStyles} ${phase === 'pre' ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-transparent text-slate-500'}`}><Timer className="w-4 h-4 mx-auto mb-1" /> Pre</button>
         <button disabled={noShow} onClick={() => setPhase('auto')} className={`${navStyles} ${phase === 'auto' ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-transparent text-slate-500'} ${noShow ? 'opacity-30' : ''}`}><Play className="w-4 h-4 mx-auto mb-1" /> Auto</button>
         <button disabled={noShow} onClick={() => setPhase('tele')} className={`${navStyles} ${phase === 'tele' ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-transparent text-slate-500'} ${noShow ? 'opacity-30' : ''}`}><Gamepad2 className="w-4 h-4 mx-auto mb-1" /> Tele</button>
-        <button onClick={() => setPhase('post')} className={`${navStyles} ${phase === 'post' ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-transparent text-slate-500'}`}><Flag className="w-4 h-4 mx-auto mb-1" /> Post</button>
+        <button onClick={() => setPhase('post')} className={`${navStyles} ${phase === 'post' ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-transparent text-slate-500'}`}><Flag className="w-4 h-4 mx-auto mb-1" /> <span className="hidden sm:inline">ENDGAME</span><span className="sm:hidden">END</span></button>
       </div>
 
       <div className="space-y-10 animate-in fade-in duration-300">
@@ -851,27 +1026,56 @@ const SkillSlider: React.FC<{ label: string, value: number, onChange: (v: number
   </div>
 );
 
-const TeamPicker: React.FC<{ teams: number[], setTeams: React.Dispatch<React.SetStateAction<number[]>>, index: number }> = ({ teams, setTeams, index }) => (
-  <div className="relative">
-    <select
-      className="w-full bg-slate-900 border-2 border-slate-800 rounded-xl px-3 py-2 text-slate-100 text-sm focus:border-blue-600 focus:outline-none appearance-none"
-      value={teams[index]}
-      onChange={(e) => {
-        const next = [...teams];
-        next[index] = parseInt(e.target.value) || 0;
-        setTeams(next);
-      }}
-    >
-      <option value={0}>Select Team</option>
-      {SMOKY_MOUNTAIN_TEAMS.map(t => (
-        <option key={t.number} value={t.number}>{t.number} | {t.name}</option>
-      ))}
-    </select>
-    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
-      <ChevronRight className="w-4 h-4 rotate-90" />
+const TeamPicker: React.FC<{ teams: number[], setTeams: React.Dispatch<React.SetStateAction<number[]>>, index: number, allTeams: Team[] }> = ({ teams, setTeams, index, allTeams }) => {
+  const [manualInput, setManualInput] = useState('');
+  const currentValue = teams[index];
+  const isManual = currentValue > 0 && !allTeams.some(t => t.number === currentValue);
+
+  return (
+    <div className="flex gap-2">
+      <div className="relative flex-1">
+        <select
+          className="w-full bg-slate-900 border-2 border-slate-800 rounded-xl px-3 py-2 text-slate-100 text-sm focus:border-blue-600 focus:outline-none appearance-none"
+          value={isManual ? 0 : currentValue}
+          onChange={(e) => {
+            const next = [...teams];
+            next[index] = parseInt(e.target.value) || 0;
+            setTeams(next);
+            setManualInput('');
+          }}
+        >
+          <option value={0}>{isManual ? `Manual: ${currentValue}` : 'Select Team'}</option>
+          {allTeams.map(t => (
+            <option key={t.number} value={t.number}>{t.number} | {t.name}</option>
+          ))}
+        </select>
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
+          <ChevronRight className="w-4 h-4 rotate-90" />
+        </div>
+      </div>
+      <input
+        type="number"
+        placeholder="Team #"
+        className="w-20 bg-slate-900 border-2 border-slate-800 rounded-xl px-2 py-2 text-slate-100 text-sm text-center focus:border-blue-600 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+        value={manualInput}
+        onChange={(e) => {
+          const val = e.target.value;
+          setManualInput(val);
+          const num = parseInt(val, 10);
+          if (num > 0) {
+            const next = [...teams];
+            next[index] = num;
+            setTeams(next);
+          } else if (val === '') {
+            const next = [...teams];
+            next[index] = 0;
+            setTeams(next);
+          }
+        }}
+      />
     </div>
-  </div>
-);
+  );
+};
 
 const AllianceStats: React.FC<{ label: string, color: string, teamNumbers: number[], pitData: Record<number, PitData>, matchData: MatchData[] }> = ({ label, color, teamNumbers, pitData, matchData }) => {
   const validTeams = teamNumbers.filter(n => n > 0);
@@ -957,9 +1161,392 @@ const StatBox: React.FC<{ label: string, value: string }> = ({ label, value }) =
   </div>
 );
 
-const StrategyLab: React.FC<{ pitData: Record<number, PitData>, matchData: MatchData[] }> = ({ pitData, matchData }) => {
+type TbaTeamDataMap = Record<number, { events: TBAEventSimple[]; matches: TBAMatch[] } | null>;
+
+function computeAllianceAnalysis(teamNumbers: number[], pitData: Record<number, PitData>, matchData: MatchData[], tbaTeamData: TbaTeamDataMap) {
+  const validTeams = teamNumbers.filter(n => n > 0);
+
+  const roleAssignments: { team: number; recommended: string; reason: string }[] = [];
+  const weaknesses: string[] = [];
+  let totalOffense = 0;
+  let totalDefense = 0;
+  let offenseCount = 0;
+  let defenseCount = 0;
+
+  for (const num of validTeams) {
+    const pit = pitData[num];
+    const tm = matchData.filter(m => m.teamNumber === num);
+    const roleCounts: Record<string, number> = { Shooter: 0, Feeder: 0, Defense: 0 };
+    tm.forEach(m => { if (roleCounts[m.teleopRole] !== undefined) roleCounts[m.teleopRole]++; });
+    const topRole = Object.entries(roleCounts).sort((a, b) => b[1] - a[1])[0];
+    const selfRole = pit?.selfAssessedRole || 'N/A';
+    const recommended = topRole && topRole[1] > 0 ? topRole[0] : (selfRole !== 'N/A' ? selfRole : 'Shooter');
+    roleAssignments.push({ team: num, recommended, reason: topRole && topRole[1] > 0 ? `${topRole[1]}/${tm.length} matches as ${topRole[0]}` : `Pit: ${selfRole}` });
+
+    if (tm.length > 0) {
+      const avgOff = tm.reduce((s, m) => s + m.offensiveSkill, 0) / tm.length;
+      const avgDef = tm.reduce((s, m) => s + m.defensiveSkill, 0) / tm.length;
+      totalOffense += avgOff;
+      totalDefense += avgDef;
+      offenseCount++;
+      defenseCount++;
+
+      const fouls = tm.reduce((s, m) => s + m.minorFouls + m.majorFouls, 0) / tm.length;
+      if (fouls > 1.5) weaknesses.push(`Team ${num}: High foul rate (${fouls.toFixed(1)}/match)`);
+      const noShows = tm.filter(m => m.noShow).length;
+      if (noShows > 0) weaknesses.push(`Team ${num}: ${noShows} no-show(s)`);
+      const died = tm.filter(m => m.died).length;
+      if (died > 0) weaknesses.push(`Team ${num}: Died on field ${died} time(s)`);
+      const lowAcc = tm.filter(m => m.teleopAccuracy === '<50%').length;
+      if (lowAcc > tm.length * 0.5 && tm.length >= 2) weaknesses.push(`Team ${num}: Low accuracy (${lowAcc}/${tm.length} matches <50%)`);
+    } else {
+      weaknesses.push(`Team ${num}: No match data`);
+    }
+
+    // TBA cross-event context
+    const tba = tbaTeamData[num];
+    if (tba?.matches && tba.matches.length > 0) {
+      const teamKey = `frc${num}`;
+      let wins = 0, losses = 0;
+      tba.matches.forEach(m => {
+        if (m.alliances.blue.team_keys.includes(teamKey)) {
+          if (m.winning_alliance === 'blue') wins++; else if (m.winning_alliance === 'red') losses++;
+        } else if (m.alliances.red.team_keys.includes(teamKey)) {
+          if (m.winning_alliance === 'red') wins++; else if (m.winning_alliance === 'blue') losses++;
+        }
+      });
+      roleAssignments[roleAssignments.length - 1].reason += ` | TBA: ${wins}W-${losses}L across ${tba.events?.length || '?'} events`;
+    }
+  }
+
+  const avgOffense = offenseCount > 0 ? (totalOffense / offenseCount).toFixed(1) : 'N/A';
+  const avgDefense = defenseCount > 0 ? (totalDefense / defenseCount).toFixed(1) : 'N/A';
+
+  // Climb reliability
+  const climbInfo: { team: number; maxLevel: string; consistency: string; canAutoClimb: boolean }[] = [];
+  for (const num of validTeams) {
+    const pit = pitData[num];
+    const tm = matchData.filter(m => m.teamNumber === num && !m.noShow);
+    const climbMatches = tm.filter(m => m.climbLevel > 0);
+    const consistency = tm.length > 0 ? `${climbMatches.length}/${tm.length}` : 'N/A';
+    climbInfo.push({
+      team: num,
+      maxLevel: pit?.climb.maxLevel || 'Unknown',
+      consistency,
+      canAutoClimb: pit?.climb.canAutoClimb || false,
+    });
+  }
+
+  return { roleAssignments, avgOffense, avgDefense, weaknesses, climbInfo };
+}
+
+function computeRpAnalysis(teamNumbers: number[], pitData: Record<number, PitData>, matchData: MatchData[]) {
+  const validTeams = teamNumbers.filter(n => n > 0);
+
+  // Energized RP (100 Fuel)
+  const shooters = validTeams.filter(n => {
+    const pit = pitData[n];
+    return pit?.selfAssessedRole === 'Shooter' || pit?.selfAssessedRole === 'N/A';
+  });
+  let totalRate = 0;
+  let rateCount = 0;
+  shooters.forEach(n => {
+    const pit = pitData[n];
+    const rate = parseFloat(pit?.scoring.scoringRate || '0');
+    if (rate > 0) { totalRate += rate; rateCount++; }
+  });
+  const avgRate = rateCount > 0 ? totalRate / rateCount : 0;
+  const estFuelOutput = shooters.length * avgRate * 120; // ~120 seconds of teleop shooting time
+  const energizedVerdict = estFuelOutput >= 130 ? 'Likely' : estFuelOutput >= 80 ? 'Possible' : 'Unlikely';
+
+  // Supercharged RP (360 Fuel)
+  const superchargedVerdict = estFuelOutput >= 400 ? 'Likely' : estFuelOutput >= 250 ? 'Possible' : 'Unlikely';
+
+  // Traversal RP (2 bots L1+ auto climb AND 2 bots L1+ endgame climb)
+  let autoClimbers = 0;
+  let endgameClimbers = 0;
+  validTeams.forEach(n => {
+    const pit = pitData[n];
+    const tm = matchData.filter(m => m.teamNumber === n && !m.noShow);
+    if (pit?.climb.canAutoClimb) autoClimbers++;
+    else if (tm.length > 0 && tm.filter(m => m.autoClimbLevel > 0).length > tm.length * 0.5) autoClimbers++;
+
+    const maxLevel = pit?.climb.maxLevel || 'None';
+    if (maxLevel !== 'None') endgameClimbers++;
+    else if (tm.length > 0 && tm.filter(m => m.climbLevel > 0).length > tm.length * 0.5) endgameClimbers++;
+  });
+  const traversalVerdict = (autoClimbers >= 2 && endgameClimbers >= 2) ? 'Likely' : (autoClimbers >= 1 && endgameClimbers >= 2) ? 'Possible' : 'Unlikely';
+
+  return {
+    energized: { verdict: energizedVerdict, detail: `~${Math.round(estFuelOutput)} est. fuel (${shooters.length} shooters, ${avgRate.toFixed(1)} avg FPS)` },
+    supercharged: { verdict: superchargedVerdict, detail: `Need 360 fuel — ${estFuelOutput >= 250 ? 'stretch goal' : 'very difficult'} at current rates` },
+    traversal: { verdict: traversalVerdict, detail: `${autoClimbers} auto climbers, ${endgameClimbers} endgame climbers` },
+  };
+}
+
+const VerdictBadge: React.FC<{ verdict: string }> = ({ verdict }) => {
+  const color = verdict === 'Likely' ? 'text-green-400 bg-green-400/10' : verdict === 'Possible' ? 'text-yellow-400 bg-yellow-400/10' : 'text-red-400 bg-red-400/10';
+  return <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${color}`}>{verdict}</span>;
+};
+
+const StrategyRecommendation: React.FC<{
+  blueTeams: number[];
+  redTeams: number[];
+  pitData: Record<number, PitData>;
+  matchData: MatchData[];
+  tbaTeamData: TbaTeamDataMap;
+}> = ({ blueTeams, redTeams, pitData, matchData, tbaTeamData }) => {
+  const blueValid = blueTeams.filter(n => n > 0);
+  const redValid = redTeams.filter(n => n > 0);
+  if (blueValid.length === 0 && redValid.length === 0) return null;
+
+  const blueAnalysis = computeAllianceAnalysis(blueTeams, pitData, matchData, tbaTeamData);
+  const redAnalysis = computeAllianceAnalysis(redTeams, pitData, matchData, tbaTeamData);
+  const blueRp = computeRpAnalysis(blueTeams, pitData, matchData);
+  const redRp = computeRpAnalysis(redTeams, pitData, matchData);
+
+  const renderAnalysis = (label: string, color: string, analysis: ReturnType<typeof computeAllianceAnalysis>, rp: ReturnType<typeof computeRpAnalysis>, teams: number[]) => {
+    const borderColor = color === 'blue' ? 'border-blue-500/30' : 'border-red-500/30';
+    const bgColor = color === 'blue' ? 'bg-blue-500/5' : 'bg-red-500/5';
+    const textColor = color === 'blue' ? 'text-blue-400' : 'text-red-400';
+    const validTeams = teams.filter(n => n > 0);
+    if (validTeams.length === 0) return null;
+
+    return (
+      <div className={`${bgColor} border ${borderColor} rounded-2xl p-4 space-y-4`}>
+        <h4 className={`text-xs font-bold uppercase ${textColor}`}>{label} Alliance Strategy</h4>
+
+        {/* Role Assignments */}
+        <div className="space-y-2">
+          <span className="text-[10px] uppercase font-bold text-slate-500 block">Role Assignments</span>
+          {analysis.roleAssignments.map(r => (
+            <div key={r.team} className="bg-slate-950/40 rounded-xl p-2 flex items-center justify-between">
+              <span className="text-xs text-slate-300 font-bold">Team {r.team}</span>
+              <div className="text-right">
+                <span className="text-xs font-bold text-slate-200">{r.recommended}</span>
+                <span className="text-[10px] text-slate-500 block">{r.reason}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Strength Summary */}
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-slate-950/40 rounded-xl p-2 text-center">
+            <span className="text-[9px] uppercase font-bold text-slate-500 block">Offense</span>
+            <span className="text-sm font-bold text-slate-200">{analysis.avgOffense}/5</span>
+          </div>
+          <div className="bg-slate-950/40 rounded-xl p-2 text-center">
+            <span className="text-[9px] uppercase font-bold text-slate-500 block">Defense</span>
+            <span className="text-sm font-bold text-slate-200">{analysis.avgDefense}/5</span>
+          </div>
+        </div>
+
+        {/* Climb Reliability */}
+        <div className="space-y-1">
+          <span className="text-[10px] uppercase font-bold text-slate-500 block">Climb Reliability</span>
+          {analysis.climbInfo.map(c => (
+            <div key={c.team} className="text-xs text-slate-400 flex justify-between">
+              <span>Team {c.team}</span>
+              <span className="text-slate-300">Max: {c.maxLevel} | {c.consistency} climbed{c.canAutoClimb ? ' | Auto-climb' : ''}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Weaknesses */}
+        {analysis.weaknesses.length > 0 && (
+          <div className="space-y-1">
+            <span className="text-[10px] uppercase font-bold text-amber-400 block">Weakness Flags</span>
+            {analysis.weaknesses.map((w, i) => (
+              <div key={i} className="text-xs text-amber-300/70 flex items-start gap-1">
+                <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                <span>{w}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* RP Analysis */}
+        <div className="space-y-2">
+          <span className="text-[10px] uppercase font-bold text-slate-500 block">RP Pathways</span>
+          <div className="bg-slate-950/40 rounded-xl p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-slate-400">Energized RP (100 fuel)</span>
+              <VerdictBadge verdict={rp.energized.verdict} />
+            </div>
+            <p className="text-[10px] text-slate-500">{rp.energized.detail}</p>
+          </div>
+          <div className="bg-slate-950/40 rounded-xl p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-slate-400">Supercharged RP (360 fuel)</span>
+              <VerdictBadge verdict={rp.supercharged.verdict} />
+            </div>
+            <p className="text-[10px] text-slate-500">{rp.supercharged.detail}</p>
+          </div>
+          <div className="bg-slate-950/40 rounded-xl p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-slate-400">Traversal RP (2 auto + 2 endgame)</span>
+              <VerdictBadge verdict={rp.traversal.verdict} />
+            </div>
+            <p className="text-[10px] text-slate-500">{rp.traversal.detail}</p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Build recommended strategy card
+  const buildStrategyCard = () => {
+    if (blueValid.length === 0 || redValid.length === 0) return null;
+
+    const isOurAlliance = (teams: number[]) => teams.includes(8778);
+    const ourAlliance = isOurAlliance(blueTeams) ? 'blue' : isOurAlliance(redTeams) ? 'red' : null;
+    const ourAnalysis = ourAlliance === 'blue' ? blueAnalysis : ourAlliance === 'red' ? redAnalysis : blueAnalysis;
+    const ourTeams = ourAlliance === 'blue' ? blueTeams : ourAlliance === 'red' ? redTeams : blueTeams;
+    const oppAnalysis = ourAlliance === 'blue' ? redAnalysis : ourAlliance === 'red' ? blueAnalysis : redAnalysis;
+    const oppTeams = ourAlliance === 'blue' ? redTeams : ourAlliance === 'red' ? blueTeams : redTeams;
+    const ourRp = ourAlliance === 'blue' ? blueRp : ourAlliance === 'red' ? redRp : blueRp;
+
+    const autoClimbers = ourAnalysis.climbInfo.filter(c => c.canAutoClimb).map(c => c.team);
+    const shooterTeams = ourAnalysis.roleAssignments.filter(r => r.recommended === 'Shooter').map(r => r.team);
+    const feederTeams = ourAnalysis.roleAssignments.filter(r => r.recommended === 'Feeder').map(r => r.team);
+    const defenseTeams = ourAnalysis.roleAssignments.filter(r => r.recommended === 'Defense').map(r => r.team);
+
+    // Find opponent's weakest team (most weaknesses or lowest offense)
+    const oppValid = oppTeams.filter(n => n > 0);
+    const oppWeakest = oppValid.length > 0 ? oppValid.reduce((best, num) => {
+      const tm = matchData.filter(m => m.teamNumber === num);
+      const avgOff = tm.length > 0 ? tm.reduce((s, m) => s + m.offensiveSkill, 0) / tm.length : 3;
+      const bestTm = matchData.filter(m => m.teamNumber === best);
+      const bestOff = bestTm.length > 0 ? bestTm.reduce((s, m) => s + m.offensiveSkill, 0) / bestTm.length : 3;
+      return avgOff < bestOff ? num : best;
+    }, oppValid[0]) : null;
+
+    // Find opponent's best scorer to defend
+    const oppBestScorer = oppValid.length > 0 ? oppValid.reduce((best, num) => {
+      const tm = matchData.filter(m => m.teamNumber === num);
+      const avgOff = tm.length > 0 ? tm.reduce((s, m) => s + m.offensiveSkill, 0) / tm.length : 3;
+      const bestTm = matchData.filter(m => m.teamNumber === best);
+      const bestOff = bestTm.length > 0 ? bestTm.reduce((s, m) => s + m.offensiveSkill, 0) / bestTm.length : 3;
+      return avgOff > bestOff ? num : best;
+    }, oppValid[0]) : null;
+
+    const labelColor = ourAlliance === 'red' ? 'text-red-400' : 'text-blue-400';
+
+    return (
+      <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-700/50 rounded-2xl p-5 space-y-5">
+        <h4 className="text-sm font-bold uppercase text-slate-200 flex items-center gap-2">
+          <BrainCircuit className="w-4 h-4 text-purple-400" />
+          Recommended Strategy {ourAlliance && <span className={`text-[10px] ${labelColor}`}>({ourAlliance} alliance{ourAlliance ? ' — our team' : ''})</span>}
+        </h4>
+
+        {/* Auto */}
+        <div className="space-y-1">
+          <span className="text-[10px] uppercase font-bold text-purple-400 block">Auto Phase</span>
+          <div className="text-xs text-slate-300 space-y-0.5">
+            {shooterTeams.length > 0 && <div>Shoot fuel: {shooterTeams.map(t => `Team ${t}`).join(', ')}</div>}
+            {autoClimbers.length > 0 && <div>Auto-climb (for Traversal RP): {autoClimbers.map(t => `Team ${t}`).join(', ')}</div>}
+            {autoClimbers.length < 2 && <div className="text-amber-400">Warning: Only {autoClimbers.length} auto-climber(s) — Traversal RP auto requirement at risk</div>}
+          </div>
+        </div>
+
+        {/* Teleop */}
+        <div className="space-y-1">
+          <span className="text-[10px] uppercase font-bold text-blue-400 block">Teleop Phase</span>
+          <div className="text-xs text-slate-300 space-y-0.5">
+            {shooterTeams.length > 0 && <div>Shooters: {shooterTeams.map(t => `Team ${t}`).join(', ')}</div>}
+            {feederTeams.length > 0 && <div>Feeders: {feederTeams.map(t => `Team ${t}`).join(', ')}</div>}
+            {defenseTeams.length > 0 && <div>Defense: {defenseTeams.map(t => `Team ${t}`).join(', ')}</div>}
+            {ourRp.energized.verdict !== 'Unlikely' && <div className="text-green-400">Push for Energized RP — focus fuel output</div>}
+          </div>
+        </div>
+
+        {/* Endgame */}
+        <div className="space-y-1">
+          <span className="text-[10px] uppercase font-bold text-amber-400 block">Endgame</span>
+          <div className="text-xs text-slate-300 space-y-0.5">
+            {ourAnalysis.climbInfo.filter(c => c.maxLevel !== 'None' && c.maxLevel !== 'Unknown').map(c => (
+              <div key={c.team}>Team {c.team}: Climb to {c.maxLevel} ({c.consistency} reliability)</div>
+            ))}
+            {ourAnalysis.climbInfo.filter(c => c.maxLevel === 'None' || c.maxLevel === 'Unknown').map(c => (
+              <div key={c.team} className="text-slate-500">Team {c.team}: No climb — continue scoring</div>
+            ))}
+          </div>
+        </div>
+
+        {/* Key Risks */}
+        {ourAnalysis.weaknesses.length > 0 && (
+          <div className="space-y-1">
+            <span className="text-[10px] uppercase font-bold text-red-400 block">Key Risks</span>
+            <div className="text-xs text-red-300/70 space-y-0.5">
+              {ourAnalysis.weaknesses.slice(0, 3).map((w, i) => <div key={i}>{w}</div>)}
+            </div>
+          </div>
+        )}
+
+        {/* Counter-strategy */}
+        {oppValid.length > 0 && (
+          <div className="space-y-1">
+            <span className="text-[10px] uppercase font-bold text-cyan-400 block">Counter-Strategy (vs. Opponent)</span>
+            <div className="text-xs text-slate-300 space-y-0.5">
+              {oppBestScorer && <div>Defend Team {oppBestScorer} — their top scorer</div>}
+              {oppAnalysis.weaknesses.length > 0 && <div className="text-cyan-300/70">Exploit: {oppAnalysis.weaknesses[0]}</div>}
+              {oppAnalysis.climbInfo.filter(c => c.maxLevel !== 'None' && c.maxLevel !== 'Unknown').length >= 2 && (
+                <div>Opponents have strong climbers — deny Traversal RP by disrupting their climb setup</div>
+              )}
+              {oppAnalysis.climbInfo.filter(c => c.maxLevel !== 'None' && c.maxLevel !== 'Unknown').length < 2 && (
+                <div className="text-green-400">Opponents likely can't get Traversal RP — focus on denying Energized RP</div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-6">
+      <h3 className="text-sm font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2">
+        <Target className="w-4 h-4" />
+        Strategy Recommendations
+      </h3>
+      <div className="grid grid-cols-1 gap-6">
+        {renderAnalysis('Blue', 'blue', blueAnalysis, blueRp, blueTeams)}
+        {renderAnalysis('Red', 'red', redAnalysis, redRp, redTeams)}
+      </div>
+      {buildStrategyCard()}
+    </div>
+  );
+};
+
+const StrategyLab: React.FC<{ pitData: Record<number, PitData>, matchData: MatchData[], availableTeams: Team[], selectedSeason: number }> = ({ pitData, matchData, availableTeams, selectedSeason }) => {
   const [blue, setBlue] = useState<number[]>([0, 0, 0]);
   const [red, setRed] = useState<number[]>([0, 0, 0]);
+  const [tbaTeamData, setTbaTeamData] = useState<TbaTeamDataMap>({});
+  const [tbaFetchLoading, setTbaFetchLoading] = useState<Record<number, boolean>>({});
+
+  useEffect(() => {
+    const allTeamNums = [...blue, ...red].filter(n => n > 0);
+    const newTeams = allTeamNums.filter(n => tbaTeamData[n] === undefined && !tbaFetchLoading[n]);
+    if (newTeams.length === 0) return;
+
+    for (const num of newTeams) {
+      setTbaFetchLoading(prev => ({ ...prev, [num]: true }));
+      Promise.all([
+        fetchTbaTeamEvents(num, selectedSeason),
+        fetchTbaTeamMatches(num, selectedSeason),
+      ]).then(([events, matches]) => {
+        setTbaTeamData(prev => ({ ...prev, [num]: { events, matches } }));
+      }).catch(() => {
+        setTbaTeamData(prev => ({ ...prev, [num]: null }));
+      }).finally(() => {
+        setTbaFetchLoading(prev => ({ ...prev, [num]: false }));
+      });
+    }
+  }, [blue, red, selectedSeason, tbaTeamData, tbaFetchLoading]);
+
+  const anyLoading = [...blue, ...red].some(n => n > 0 && tbaFetchLoading[n]);
+  const hasTeams = blue.some(n => n > 0) || red.some(n => n > 0);
 
   return (
     <div className="space-y-8 pb-12">
@@ -967,15 +1554,30 @@ const StrategyLab: React.FC<{ pitData: Record<number, PitData>, matchData: Match
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-4">
           <h3 className="text-xs font-bold text-blue-400 uppercase">Blue</h3>
-          {[0, 1, 2].map(i => <TeamPicker key={i} teams={blue} setTeams={setBlue} index={i} />)}
+          {[0, 1, 2].map(i => <TeamPicker key={i} teams={blue} setTeams={setBlue} index={i} allTeams={availableTeams} />)}
         </div>
         <div className="space-y-4">
           <h3 className="text-xs font-bold text-red-400 uppercase">Red</h3>
-          {[0, 1, 2].map(i => <TeamPicker key={i} teams={red} setTeams={setRed} index={i} />)}
+          {[0, 1, 2].map(i => <TeamPicker key={i} teams={red} setTeams={setRed} index={i} allTeams={availableTeams} />)}
         </div>
       </div>
+      {anyLoading && (
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          Loading TBA data for selected teams...
+        </div>
+      )}
       <AllianceStats label="Blue" color="blue" teamNumbers={blue} pitData={pitData} matchData={matchData} />
       <AllianceStats label="Red" color="red" teamNumbers={red} pitData={pitData} matchData={matchData} />
+      {hasTeams && (
+        <StrategyRecommendation
+          blueTeams={blue}
+          redTeams={red}
+          pitData={pitData}
+          matchData={matchData}
+          tbaTeamData={tbaTeamData}
+        />
+      )}
     </div>
   );
 };
@@ -1001,12 +1603,55 @@ const Counter: React.FC<{ label: string, value: number, onChange: (v: number) =>
   </div>
 );
 
-const ConfigView: React.FC<{ matchData: MatchData[], isConnected: boolean, onShowQR: (data: string) => void, onClearData: () => void }> = ({ matchData, isConnected, onShowQR, onClearData }) => {
+const ConfigView: React.FC<{
+  matchData: MatchData[];
+  pitData: Record<number, PitData>;
+  isConnected: boolean;
+  events: TBAEventSimple[];
+  selectedSeason: number;
+  selectedEventKey: string;
+  isLoadingTba: { events: boolean; teams: boolean };
+  onSetSeason: (season: number) => void;
+  onShowQR: (data: string) => void;
+  onClearData: () => void;
+}> = ({ matchData, pitData, isConnected, events, selectedSeason, selectedEventKey, isLoadingTba, onSetSeason, onShowQR, onClearData }) => {
+  const selectedEventName = events.find(event => event.key === selectedEventKey)?.name || 'Static Smoky Mountain team list';
+
   return (
     <div className="space-y-8 pb-12">
       <h2 className="text-3xl font-header text-white">CONFIG</h2>
 
       <div className="space-y-4">
+        <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">Competition Teams (Blue Alliance)</h3>
+        <div className="grid grid-cols-1 gap-4">
+          <label className="space-y-2">
+            <span className="text-[10px] uppercase font-bold text-slate-500">Season</span>
+            <input
+              type="number"
+              min="2016"
+              max={new Date().getFullYear()}
+              className="w-full bg-slate-900 border-2 border-slate-800 rounded-xl px-4 py-3 text-slate-100 text-sm focus:border-blue-600 focus:outline-none"
+              value={selectedSeason}
+              onChange={(e) => {
+                const next = parseInt(e.target.value, 10);
+                if (Number.isFinite(next)) onSetSeason(next);
+              }}
+            />
+          </label>
+          <p className="text-xs text-slate-400">
+            Current event: <span className="text-slate-200">{selectedEventName}</span>
+          </p>
+          <p className="text-[10px] text-slate-600">Change event in the TBA tab.</p>
+          {isLoadingTba.teams && <p className="text-xs text-slate-500 flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" />Loading teams for selected event...</p>}
+          {!isLoadingTba.teams && (
+            <p className="text-xs text-slate-500">
+              Teams are pulled from TBA when an event is selected, otherwise fallback to the built-in team list.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-4 pt-2">
         <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">Share Data</h3>
         <Button
           size="lg"
@@ -1018,10 +1663,38 @@ const ConfigView: React.FC<{ matchData: MatchData[], isConnected: boolean, onSho
           disabled={matchData.length === 0}
         >
           <Share2 className="w-5 h-5 mr-2" />
-          Share All My Matches ({matchData.length})
+          Share All Matches ({matchData.length})
+        </Button>
+        <Button
+          size="lg"
+          variant="outline"
+          className="w-full h-16"
+          onClick={() => {
+            const pits = Object.values(pitData) as PitData[];
+            if (pits.length === 0) return;
+            onShowQR(encodeBulkPitData(pits));
+          }}
+          disabled={Object.keys(pitData).length === 0}
+        >
+          <Share2 className="w-5 h-5 mr-2" />
+          Share All Pit Data ({Object.keys(pitData).length})
+        </Button>
+        <Button
+          size="lg"
+          variant="outline"
+          className="w-full h-16"
+          onClick={() => {
+            const pits = Object.values(pitData) as PitData[];
+            if (matchData.length === 0 && pits.length === 0) return;
+            onShowQR(encodeAllData(pits, matchData));
+          }}
+          disabled={matchData.length === 0 && Object.keys(pitData).length === 0}
+        >
+          <Share2 className="w-5 h-5 mr-2" />
+          Share All Data ({matchData.length + Object.keys(pitData).length})
         </Button>
         <p className="text-xs text-slate-500">
-          Generates one QR code with all your match data. Any scout can scan it to import everything at once. Newer data automatically overwrites older data.
+          Generates QR codes with your data. Any scout can scan to import. Newer data automatically overwrites older data.
         </p>
       </div>
 
@@ -1030,6 +1703,7 @@ const ConfigView: React.FC<{ matchData: MatchData[], isConnected: boolean, onSho
         <div className="bg-slate-900 border-2 border-slate-800 rounded-2xl p-4 space-y-2 text-sm">
           <div className="flex justify-between"><span className="text-slate-500">Version</span><span className="text-slate-300">1.0.0</span></div>
           <div className="flex justify-between"><span className="text-slate-500">Matches Stored</span><span className="text-slate-300">{matchData.length}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Pit Records</span><span className="text-slate-300">{Object.keys(pitData).length}</span></div>
           <div className="flex justify-between"><span className="text-slate-500">Device ID</span><span className="text-slate-400 font-mono text-xs truncate max-w-[180px]">{localStorage.getItem('smoky_scout_device_id') || 'N/A'}</span></div>
         </div>
       </div>
@@ -1046,6 +1720,323 @@ const ConfigView: React.FC<{ matchData: MatchData[], isConnected: boolean, onSho
             : 'Must be online to clear all data (server data would remain).'}
         </p>
       </div>
+    </div>
+  );
+};
+
+// --- TBA View ---
+
+type TBATab = 'rankings' | 'matches' | 'stats' | 'alliances';
+
+const TBAView: React.FC<{
+  eventKey: string;
+  events: TBAEventSimple[];
+  selectedSeason: number;
+  isLoadingEvents: boolean;
+  onSetEvent: (season: number, eventKey: string | null) => void | Promise<void>;
+}> = ({ eventKey, events, selectedSeason, isLoadingEvents, onSetEvent }) => {
+  const [tab, setTab] = useState<TBATab>('rankings');
+  const [rankings, setRankings] = useState<TBARankings | null>(null);
+  const [sortCol, setSortCol] = useState<string>('rank');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [tbaMatches, setTbaMatches] = useState<TBAMatch[]>([]);
+  const [oprs, setOprs] = useState<TBAOprs | null>(null);
+  const [alliances, setAlliances] = useState<TBAAlliance[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [error, setError] = useState('');
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const currentEvent = events.find(e => e.key === eventKey);
+
+  const fetchAllTbaData = useCallback(async () => {
+    if (!eventKey) return;
+    setLoading(true);
+    setError('');
+    try {
+      const [r, m, o, a] = await Promise.all([
+        fetchTbaRankings(eventKey).catch(() => null),
+        fetchTbaMatchesForEvent(eventKey).catch(() => []),
+        fetchTbaOprs(eventKey).catch(() => null),
+        fetchTbaAlliances(eventKey).catch(() => []),
+      ]);
+      setRankings(r);
+      setTbaMatches(m as TBAMatch[]);
+      setOprs(o);
+      setAlliances(a);
+      setLastUpdated(Date.now());
+    } catch (err: any) {
+      setError(err.message || 'Failed to load TBA data');
+    } finally {
+      setLoading(false);
+    }
+  }, [eventKey]);
+
+  useEffect(() => {
+    fetchAllTbaData();
+    pollRef.current = setInterval(fetchAllTbaData, 60000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [fetchAllTbaData]);
+
+  const teamNum = (key: string) => key.replace('frc', '');
+  const seasonEvents = events.filter(e => e.year === selectedSeason).sort((a, b) => a.start_date.localeCompare(b.start_date));
+
+  if (!eventKey) {
+    return (
+      <div className="space-y-6 animate-in fade-in duration-300">
+        <h2 className="text-3xl font-header text-white">TBA EVENT DATA</h2>
+        <label className="space-y-2 block">
+          <span className="text-[10px] uppercase font-bold text-slate-500">
+            Event ({seasonEvents.length} found)
+          </span>
+          <select
+            className="w-full bg-slate-900 border-2 border-slate-800 rounded-xl px-3 py-3 text-slate-100 text-sm focus:border-blue-600 focus:outline-none appearance-none"
+            value={eventKey}
+            onChange={(e) => onSetEvent(selectedSeason, e.target.value || null)}
+          >
+            <option value="">Select an event...</option>
+            {seasonEvents.map(event => (
+              <option key={event.key} value={event.key}>
+                {event.start_date} • {event.name} ({event.event_code})
+              </option>
+            ))}
+          </select>
+          {isLoadingEvents && (
+            <p className="text-xs text-slate-500 flex items-center gap-2">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Loading events...
+            </p>
+          )}
+        </label>
+        <div className="bg-slate-900 border-2 border-slate-800 rounded-2xl p-8 text-center">
+          <Globe className="w-12 h-12 text-slate-600 mx-auto mb-4" />
+          <p className="text-slate-400">No event selected.</p>
+          <p className="text-xs text-slate-500 mt-2">Choose an event above to see live data.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const tabStyles = "flex-1 py-3 text-center text-xs font-bold uppercase tracking-wider border-b-2 transition-colors";
+
+  const sortedMatches = [...tbaMatches].sort((a, b) => {
+    const compOrder: Record<string, number> = { qm: 0, ef: 1, qf: 2, sf: 3, f: 4 };
+    const aOrder = compOrder[a.comp_level] ?? 5;
+    const bOrder = compOrder[b.comp_level] ?? 5;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    if (a.set_number !== b.set_number) return a.set_number - b.set_number;
+    return a.match_number - b.match_number;
+  });
+
+  const oprEntries: [string, number][] = oprs?.oprs
+    ? (Object.entries(oprs.oprs) as [string, number][]).sort((a, b) => b[1] - a[1])
+    : [];
+
+  const toggleSort = (col: string) => {
+    if (sortCol === col) {
+      setSortDir(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortCol(col);
+      setSortDir('asc');
+    }
+  };
+
+  const sortedRankings = rankings?.rankings ? [...rankings.rankings].sort((a, b) => {
+    let cmp = 0;
+    if (sortCol === 'rank') {
+      cmp = a.rank - b.rank;
+    } else if (sortCol === 'team') {
+      cmp = parseInt(a.team_key.replace('frc', '')) - parseInt(b.team_key.replace('frc', ''));
+    } else if (sortCol === 'wlt') {
+      cmp = a.record.wins - b.record.wins;
+      if (cmp === 0) cmp = a.record.losses - b.record.losses;
+    } else if (sortCol.startsWith('sort_')) {
+      const idx = parseInt(sortCol.replace('sort_', ''));
+      cmp = (a.sort_orders?.[idx] ?? 0) - (b.sort_orders?.[idx] ?? 0);
+    }
+    return sortDir === 'asc' ? cmp : -cmp;
+  }) : [];
+
+  const sortArrow = (col: string) => sortCol === col ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-300">
+      <h2 className="text-3xl font-header text-white">TBA EVENT DATA</h2>
+      <label className="space-y-2 block">
+        <span className="text-[10px] uppercase font-bold text-slate-500">
+          Event ({seasonEvents.length} found)
+        </span>
+        <select
+          className="w-full bg-slate-900 border-2 border-slate-800 rounded-xl px-3 py-3 text-slate-100 text-sm focus:border-blue-600 focus:outline-none appearance-none"
+          value={eventKey}
+          onChange={(e) => onSetEvent(selectedSeason, e.target.value || null)}
+        >
+          <option value="">Use local teams (no TBA event)</option>
+          {seasonEvents.map(event => (
+            <option key={event.key} value={event.key}>
+              {event.start_date} • {event.name} ({event.event_code})
+            </option>
+          ))}
+        </select>
+        {isLoadingEvents && (
+          <p className="text-xs text-slate-500 flex items-center gap-2">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            Loading events...
+          </p>
+        )}
+      </label>
+      {currentEvent && (
+        <div className="bg-slate-900 border-2 border-slate-800 rounded-2xl p-4">
+          <p className="font-bold text-slate-200">{currentEvent.name}</p>
+          <p className="text-xs text-slate-500">{currentEvent.start_date} — {currentEvent.end_date} • {[currentEvent.city, currentEvent.state_prov].filter(Boolean).join(', ')}</p>
+        </div>
+      )}
+
+      {lastUpdated && (
+        <p className="text-[10px] text-slate-600 flex items-center gap-1">
+          <Clock className="w-3 h-3" /> Last updated: {new Date(lastUpdated).toLocaleTimeString()}
+          {loading && <Loader2 className="w-3 h-3 animate-spin ml-1" />}
+        </p>
+      )}
+
+      {error && (
+        <div className="flex items-center gap-2 text-red-400 text-sm bg-red-500/10 border border-red-500/30 rounded-xl p-3">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" /> {error}
+        </div>
+      )}
+
+      <div className="flex bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <button onClick={() => setTab('rankings')} className={`${tabStyles} ${tab === 'rankings' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500'}`}>Rankings</button>
+        <button onClick={() => setTab('matches')} className={`${tabStyles} ${tab === 'matches' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500'}`}>Matches</button>
+        <button onClick={() => setTab('stats')} className={`${tabStyles} ${tab === 'stats' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500'}`}>Stats</button>
+        <button onClick={() => setTab('alliances')} className={`${tabStyles} ${tab === 'alliances' ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500'}`}>Alliances</button>
+      </div>
+
+      {loading && !lastUpdated && (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
+        </div>
+      )}
+
+      {tab === 'rankings' && rankings?.rankings && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-slate-500 uppercase tracking-wider border-b border-slate-800">
+                <th className="text-left py-2 px-2 cursor-pointer hover:text-slate-300 select-none" onClick={() => toggleSort('rank')}>Rank{sortArrow('rank')}</th>
+                <th className="text-left py-2 px-2 cursor-pointer hover:text-slate-300 select-none" onClick={() => toggleSort('team')}>Team{sortArrow('team')}</th>
+                <th className="text-center py-2 px-2 cursor-pointer hover:text-slate-300 select-none" onClick={() => toggleSort('wlt')}>W-L-T{sortArrow('wlt')}</th>
+                {rankings.sort_order_info?.map((info, i) => (
+                  <th key={i} className="text-center py-2 px-2 cursor-pointer hover:text-slate-300 select-none" onClick={() => toggleSort(`sort_${i}`)}>{info.name}{sortArrow(`sort_${i}`)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedRankings.map(r => (
+                <tr key={r.team_key} className="border-b border-slate-800/50 hover:bg-slate-900/50">
+                  <td className="py-2 px-2 font-bold text-slate-300">{r.rank}</td>
+                  <td className="py-2 px-2 font-bold text-blue-400">{teamNum(r.team_key)}</td>
+                  <td className="py-2 px-2 text-center text-slate-400">{r.record.wins}-{r.record.losses}-{r.record.ties}</td>
+                  {r.sort_orders?.map((val, i) => (
+                    <td key={i} className="py-2 px-2 text-center text-slate-400">{typeof val === 'number' ? val.toFixed(rankings.sort_order_info?.[i]?.precision ?? 2) : val}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {tab === 'rankings' && !rankings?.rankings && !loading && (
+        <p className="text-slate-500 text-sm text-center py-8">No rankings available yet.</p>
+      )}
+
+      {tab === 'matches' && (
+        <div className="space-y-2">
+          {sortedMatches.length === 0 && !loading && (
+            <p className="text-slate-500 text-sm text-center py-8">No matches available yet.</p>
+          )}
+          {sortedMatches.map(m => {
+            const label = m.comp_level === 'qm' ? `Q${m.match_number}` : `${m.comp_level.toUpperCase()}${m.set_number}-${m.match_number}`;
+            const hasScore = m.alliances.red.score >= 0 && m.alliances.blue.score >= 0;
+            return (
+              <div key={m.key} className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-center gap-3">
+                <span className="font-bold text-slate-300 w-16 text-sm">{label}</span>
+                <div className="flex-1 grid grid-cols-2 gap-2 text-xs">
+                  <div className={`rounded-lg p-2 ${m.winning_alliance === 'red' ? 'bg-red-500/10 border border-red-500/30' : 'bg-slate-800/50'}`}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-red-400 font-bold">Red</span>
+                      {hasScore && <span className="font-bold text-slate-200">{m.alliances.red.score}</span>}
+                    </div>
+                    <p className="text-slate-400 truncate">{m.alliances.red.team_keys.map(teamNum).join(', ')}</p>
+                  </div>
+                  <div className={`rounded-lg p-2 ${m.winning_alliance === 'blue' ? 'bg-blue-500/10 border border-blue-500/30' : 'bg-slate-800/50'}`}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-blue-400 font-bold">Blue</span>
+                      {hasScore && <span className="font-bold text-slate-200">{m.alliances.blue.score}</span>}
+                    </div>
+                    <p className="text-slate-400 truncate">{m.alliances.blue.team_keys.map(teamNum).join(', ')}</p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {tab === 'stats' && (
+        <div className="overflow-x-auto">
+          {oprEntries.length === 0 && !loading ? (
+            <p className="text-slate-500 text-sm text-center py-8">No OPR/DPR data available yet.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-slate-500 uppercase tracking-wider border-b border-slate-800">
+                  <th className="text-left py-2 px-2">#</th>
+                  <th className="text-left py-2 px-2">Team</th>
+                  <th className="text-center py-2 px-2">OPR</th>
+                  <th className="text-center py-2 px-2">DPR</th>
+                  <th className="text-center py-2 px-2">CCWM</th>
+                </tr>
+              </thead>
+              <tbody>
+                {oprEntries.map(([teamKey, opr], i) => (
+                  <tr key={teamKey} className="border-b border-slate-800/50 hover:bg-slate-900/50">
+                    <td className="py-2 px-2 text-slate-500">{i + 1}</td>
+                    <td className="py-2 px-2 font-bold text-blue-400">{teamNum(teamKey)}</td>
+                    <td className="py-2 px-2 text-center text-green-400">{opr.toFixed(2)}</td>
+                    <td className="py-2 px-2 text-center text-red-400">{(oprs?.dprs?.[teamKey] ?? 0).toFixed(2)}</td>
+                    <td className="py-2 px-2 text-center text-slate-300">{(oprs?.ccwms?.[teamKey] ?? 0).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {tab === 'alliances' && (
+        <div className="space-y-3">
+          {alliances.length === 0 && !loading ? (
+            <p className="text-slate-500 text-sm text-center py-8">No alliance selections available yet.</p>
+          ) : (
+            alliances.map((a, i) => (
+              <div key={i} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <p className="font-bold text-slate-200 mb-2">{a.name || `Alliance ${i + 1}`}</p>
+                <div className="flex flex-wrap gap-2">
+                  {a.picks.map((pick, j) => (
+                    <span key={j} className={`px-3 py-1 rounded-lg text-sm font-bold ${j === 0 ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-slate-800 text-slate-300'}`}>
+                      {teamNum(pick)}
+                    </span>
+                  ))}
+                </div>
+                {a.status && (
+                  <p className="text-xs text-slate-500 mt-2">{a.status.level} — {a.status.status}{a.status.record ? ` (${a.status.record.wins}-${a.status.record.losses}-${a.status.record.ties})` : ''}</p>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 };

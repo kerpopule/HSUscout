@@ -7,6 +7,7 @@ import matchRoutes from './routes/match.js';
 import syncRoutes from './routes/sync.js';
 import pinRoutes from './routes/pin.js';
 import adminRoutes from './routes/admin.js';
+import tbaRoutes from './routes/tba.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -26,6 +27,7 @@ app.use('/api', pitRoutes);
 app.use('/api', matchRoutes);
 app.use('/api', syncRoutes);
 app.use('/api', adminRoutes);
+app.use('/api', tbaRoutes);
 
 // Serve built frontend in production
 const distPath = path.join(__dirname, '..', 'dist');

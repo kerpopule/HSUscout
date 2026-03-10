@@ -12,7 +12,7 @@ interface QRCodeModalProps {
 
 export const QRCodeModal: React.FC<QRCodeModalProps> = ({ data, title, subtitle, onClose }) => {
   const [copied, setCopied] = React.useState(false);
-  const isBulk = data.startsWith('B1\n');
+  const isBulk = data.startsWith('B1\n') || data.startsWith('Q1\n') || data.startsWith('A1\n');
   const qrSize = isBulk ? 300 : 256;
   const errorLevel = isBulk ? 'L' : 'M';
 

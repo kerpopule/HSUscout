@@ -2,17 +2,18 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { Camera, CheckCircle2, RefreshCw, XCircle, ArrowLeft } from 'lucide-react';
 import { Button } from './Button';
-import { decodeQR } from '../lib/qr-encode';
-import { MatchData } from '../types';
+import { decodeQR, DecodedQRData } from '../lib/qr-encode';
+import { MatchData, PitData } from '../types';
 
 interface QRScannerProps {
-  onImport: (matches: MatchData[]) => void;
+  onImport: (data: DecodedQRData) => void;
   onBack: () => void;
 }
 
 export const QRScanner: React.FC<QRScannerProps> = ({ onImport, onBack }) => {
   const [scanning, setScanning] = useState(false);
-  const [results, setResults] = useState<{ data: MatchData; updated: boolean; time: number }[]>([]);
+  const [matchResults, setMatchResults] = useState<{ data: MatchData; time: number }[]>([]);
+  const [pitResults, setPitResults] = useState<{ data: PitData; time: number }[]>([]);
   const [error, setError] = useState('');
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const processedQRs = useRef(new Set<string>());
@@ -26,22 +27,23 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onImport, onBack }) => {
         { facingMode: 'environment' },
         { fps: 10, qrbox: { width: 250, height: 250 } },
         (decodedText) => {
-          // Deduplicate by raw QR content so we don't re-process the same scan
           if (processedQRs.current.has(decodedText)) return;
           processedQRs.current.add(decodedText);
 
-          const matches = decodeQR(decodedText);
-          if (matches.length > 0) {
-            onImport(matches);
-            const newResults = matches.map(m => ({
-              data: m,
-              updated: false,
-              time: Date.now(),
-            }));
-            setResults(prev => [...newResults, ...prev]);
+          const decoded = decodeQR(decodedText);
+          if (decoded.matches.length > 0 || decoded.pits.length > 0) {
+            onImport(decoded);
+            if (decoded.matches.length > 0) {
+              const newResults = decoded.matches.map(m => ({ data: m, time: Date.now() }));
+              setMatchResults(prev => [...newResults, ...prev]);
+            }
+            if (decoded.pits.length > 0) {
+              const newResults = decoded.pits.map(p => ({ data: p, time: Date.now() }));
+              setPitResults(prev => [...newResults, ...prev]);
+            }
           }
         },
-        () => {} // ignore scan failures
+        () => {}
       );
       setScanning(true);
     } catch (err: any) {
@@ -63,6 +65,8 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onImport, onBack }) => {
     return () => { stopScanning(); };
   }, []);
 
+  const totalImported = matchResults.length + pitResults.length;
+
   return (
     <div className="space-y-6">
       <button onClick={onBack} className="flex items-center gap-2 text-slate-400 font-semibold">
@@ -70,7 +74,7 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onImport, onBack }) => {
       </button>
 
       <h2 className="text-3xl font-header text-white">QR SCANNER</h2>
-      <p className="text-xs text-slate-500">Scans single match QR codes and bulk "Share All" QR codes. Newer data overwrites older data automatically.</p>
+      <p className="text-xs text-slate-500">Scans match QR codes, pit data QR codes, and bulk "Share All" QR codes. Newer data overwrites older data automatically.</p>
 
       <div id="qr-reader" className="rounded-2xl overflow-hidden bg-slate-900 border-2 border-slate-800" />
 
@@ -85,15 +89,26 @@ export const QRScanner: React.FC<QRScannerProps> = ({ onImport, onBack }) => {
         {scanning ? 'Stop Scanner' : 'Start Scanner'}
       </Button>
 
-      {results.length > 0 && (
+      {totalImported > 0 && (
         <div className="space-y-3">
-          <h3 className="font-header text-xl text-slate-200">Imported ({results.length} matches)</h3>
-          {results.map((r, i) => (
-            <div key={i} className="flex items-center gap-3 p-3 bg-green-500/5 border border-green-500/20 rounded-xl">
+          <h3 className="font-header text-xl text-slate-200">
+            Imported ({matchResults.length} match{matchResults.length !== 1 ? 'es' : ''}{pitResults.length > 0 ? `, ${pitResults.length} pit record${pitResults.length !== 1 ? 's' : ''}` : ''})
+          </h3>
+          {matchResults.map((r, i) => (
+            <div key={`m-${i}`} className="flex items-center gap-3 p-3 bg-green-500/5 border border-green-500/20 rounded-xl">
               <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0" />
               <div>
                 <p className="text-sm font-bold text-slate-200">Match #{r.data.matchNumber} - Team {r.data.teamNumber}</p>
                 <p className="text-xs text-slate-500">{r.data.teleopRole} | Climb: {r.data.climbLevel}</p>
+              </div>
+            </div>
+          ))}
+          {pitResults.map((r, i) => (
+            <div key={`p-${i}`} className="flex items-center gap-3 p-3 bg-purple-500/5 border border-purple-500/20 rounded-xl">
+              <CheckCircle2 className="w-5 h-5 text-purple-500 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-bold text-slate-200">Pit Data - Team {r.data.teamNumber}</p>
+                <p className="text-xs text-slate-500">{r.data.drivetrain.type} | {r.data.selfAssessedRole}</p>
               </div>
             </div>
           ))}
