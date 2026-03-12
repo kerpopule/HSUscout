@@ -88,7 +88,15 @@ const STORAGE_KEY_MATCH = 'smoky_scout_match_v6';
 const STORAGE_KEY_TBA_CONTEXT = 'smoky_scout_tba_context_v1';
 
 type View = 'dashboard' | 'pit' | 'match' | 'settings' | 'team_detail' | 'strategy' | 'scanner' | 'tba';
-type TbaTeamDataMap = Record<number, { events: TBAEventSimple[]; matches: TBAMatch[] } | null>;
+type TbaTeamDataMap = Record<number, {
+  events: TBAEventSimple[];
+  matches: TBAMatch[];
+  ranking?: { rank: number; record: { wins: number; losses: number; ties: number }; matches_played: number } | null;
+  opr?: number | null;
+  dpr?: number | null;
+  ccwm?: number | null;
+  avgScore?: number | null;
+} | null>;
 
 const App: React.FC = () => {
   const [view, setView] = useState<View>('dashboard');
@@ -508,7 +516,7 @@ const App: React.FC = () => {
           />
         )}
 
-        {view === 'strategy' && <StrategyLab pitData={pitData} matchData={matchData} availableTeams={sortedTeamSource} selectedSeason={selectedSeason} blue={stratBlue} setBlue={setStratBlue} red={stratRed} setRed={setStratRed} tbaTeamData={stratTbaData} setTbaTeamData={setStratTbaData} />}
+        {view === 'strategy' && <StrategyLab pitData={pitData} matchData={matchData} availableTeams={sortedTeamSource} selectedSeason={selectedSeason} selectedEventKey={selectedEventKey} blue={stratBlue} setBlue={setStratBlue} red={stratRed} setRed={setStratRed} tbaTeamData={stratTbaData} setTbaTeamData={setStratTbaData} isConnected={isConnected} />}
 
         {view === 'scanner' && (
           <QRScanner
@@ -554,6 +562,13 @@ const App: React.FC = () => {
               }
             }}
             onBack={() => setView('dashboard')}
+            onViewTeam={(teamNumber) => {
+              const team = teamSource.find(t => t.number === teamNumber);
+              if (team) {
+                setSelectedTeam(team);
+                setView('team_detail');
+              }
+            }}
           />
         )}
 
@@ -1118,6 +1133,31 @@ const AllianceStats: React.FC<{ label: string, color: string, teamNumbers: numbe
     }
   }
 
+  // Compute TBA aggregate stats when in TBA mode
+  let tbaAvgOpr = 'N/A';
+  let tbaAvgDpr = 'N/A';
+  let tbaAvgCcwm = 'N/A';
+  let tbaAvgScore = 'N/A';
+  let tbaAvgRank = 'N/A';
+  if (usingTba && tbaTeamData) {
+    let oprSum = 0, oprCount = 0, dprSum = 0, dprCount = 0, ccwmSum = 0, ccwmCount = 0;
+    let scoreSum = 0, scoreCount = 0, rankSum = 0, rankCount = 0;
+    for (const num of validTeams) {
+      const tba = tbaTeamData[num];
+      if (!tba) continue;
+      if (tba.opr != null) { oprSum += tba.opr; oprCount++; }
+      if (tba.dpr != null) { dprSum += tba.dpr; dprCount++; }
+      if (tba.ccwm != null) { ccwmSum += tba.ccwm; ccwmCount++; }
+      if (tba.avgScore != null) { scoreSum += tba.avgScore; scoreCount++; }
+      if (tba.ranking?.rank != null) { rankSum += tba.ranking.rank; rankCount++; }
+    }
+    if (oprCount > 0) tbaAvgOpr = (oprSum / oprCount).toFixed(1);
+    if (dprCount > 0) tbaAvgDpr = (dprSum / dprCount).toFixed(1);
+    if (ccwmCount > 0) tbaAvgCcwm = (ccwmSum / ccwmCount).toFixed(1);
+    if (scoreCount > 0) tbaAvgScore = (scoreSum / scoreCount).toFixed(0);
+    if (rankCount > 0) tbaAvgRank = (rankSum / rankCount).toFixed(0);
+  }
+
   const winRate = allMatches.length > 0 ? (allMatches.filter(m => m.wonMatch).length / allMatches.length * 100).toFixed(0) : (usingTba ? tbaWinRate : 'N/A');
   const avgOffense = allMatches.length > 0 ? (allMatches.reduce((s, m) => s + m.offensiveSkill, 0) / allMatches.length).toFixed(1) : 'N/A';
   const avgDefense = allMatches.length > 0 ? (allMatches.reduce((s, m) => s + m.defensiveSkill, 0) / allMatches.length).toFixed(1) : 'N/A';
@@ -1140,14 +1180,25 @@ const AllianceStats: React.FC<{ label: string, color: string, teamNumbers: numbe
   return (
     <div className={`${bgColor} border ${borderColor} rounded-2xl p-4 space-y-4`}>
       <h4 className={`text-xs font-bold uppercase ${textColor}`}>{label} Alliance Stats ({usingTba ? `${tbaMatchCount} TBA matches` : `${allMatches.length} matches`})</h4>
-      <div className="grid grid-cols-3 gap-3">
-        <StatBox label="Win Rate" value={winRate === 'N/A' ? winRate : `${winRate}%`} />
-        <StatBox label="Avg Climb" value={avgClimb === 'N/A' ? avgClimb : `L${avgClimb}`} />
-        <StatBox label="Fouls/Match" value={foulRate} />
-        <StatBox label="Offense" value={`${avgOffense}/5`} />
-        <StatBox label="Defense" value={`${avgDefense}/5`} />
-        <StatBox label="Transition" value={`${avgTransition}/5`} />
-      </div>
+      {usingTba ? (
+        <div className="grid grid-cols-3 gap-3">
+          <StatBox label="Win Rate" value={winRate === 'N/A' ? winRate : `${winRate}%`} source="tba" />
+          <StatBox label="Avg Rank" value={tbaAvgRank === 'N/A' ? tbaAvgRank : `#${tbaAvgRank}`} source="tba" />
+          <StatBox label="OPR" value={tbaAvgOpr} source="tba" />
+          <StatBox label="DPR" value={tbaAvgDpr} source="tba" />
+          <StatBox label="CCWM" value={tbaAvgCcwm} source="tba" />
+          <StatBox label="Avg Score" value={tbaAvgScore} source="tba" />
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-3">
+          <StatBox label="Win Rate" value={winRate === 'N/A' ? winRate : `${winRate}%`} />
+          <StatBox label="Avg Climb" value={avgClimb === 'N/A' ? avgClimb : `L${avgClimb}`} />
+          <StatBox label="Fouls/Match" value={foulRate} />
+          <StatBox label="Offense" value={`${avgOffense}/5`} />
+          <StatBox label="Defense" value={`${avgDefense}/5`} />
+          <StatBox label="Transition" value={`${avgTransition}/5`} />
+        </div>
+      )}
       {allMatches.length > 0 && (
         <div className="grid grid-cols-2 gap-3">
           <div className="bg-slate-950/40 rounded-xl p-3">
@@ -1172,17 +1223,28 @@ const AllianceStats: React.FC<{ label: string, color: string, teamNumbers: numbe
         {validTeams.map(num => {
           const pit = pitData[num];
           const tm = matchData.filter(m => m.teamNumber === num);
+          const tba = tbaTeamData?.[num];
           return (
             <div key={num} className="bg-slate-950/40 rounded-xl p-3">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-sm font-bold text-slate-200">Team {num}</span>
-                <span className="text-[10px] text-slate-500">{tm.length} matches</span>
+                <span className="text-sm font-bold text-slate-200">
+                  Team {num}
+                  {tba?.ranking && <span className="text-blue-400 text-xs font-normal ml-2">Rank #{tba.ranking.rank}</span>}
+                </span>
+                <span className="text-[10px] text-slate-500">
+                  {tm.length > 0 ? `${tm.length} matches` : tba?.ranking ? `${tba.ranking.matches_played} TBA matches` : ''}
+                </span>
               </div>
               <div className="text-xs text-slate-400 space-y-0.5">
                 {pit && <div>Drive: {pit.drivetrain.type} | Role: {pit.selfAssessedRole} | Climb: {pit.climb.maxLevel} | Rate: {pit.scoring.scoringRate || 'N/A'} FPS</div>}
-                {!pit && !tbaTeamRecords[num] && <div className="text-amber-400">No pit data</div>}
+                {!pit && !tbaTeamRecords[num] && !tba?.opr && <div className="text-amber-400">No pit data</div>}
+                {tm.length === 0 && tba?.opr != null && (
+                  <div className="text-blue-400">
+                    OPR: {tba.opr.toFixed(1)} | DPR: {tba.dpr?.toFixed(1) ?? 'N/A'} | CCWM: {tba.ccwm?.toFixed(1) ?? 'N/A'}
+                  </div>
+                )}
                 {tm.length === 0 && tbaTeamRecords[num] && (
-                  <div className="text-blue-400">TBA: {tbaTeamRecords[num].wins}W-{tbaTeamRecords[num].losses}L across {tbaTeamRecords[num].events} event{tbaTeamRecords[num].events !== 1 ? 's' : ''}</div>
+                  <div className="text-blue-400">TBA: {tbaTeamRecords[num].wins}W-{tbaTeamRecords[num].losses}L across {tbaTeamRecords[num].events} event{tbaTeamRecords[num].events !== 1 ? 's' : ''}{tba?.avgScore != null ? ` | Avg Score: ${tba.avgScore.toFixed(0)}` : ''}</div>
                 )}
               </div>
             </div>
@@ -1193,10 +1255,10 @@ const AllianceStats: React.FC<{ label: string, color: string, teamNumbers: numbe
   );
 };
 
-const StatBox: React.FC<{ label: string, value: string }> = ({ label, value }) => (
+const StatBox: React.FC<{ label: string, value: string, source?: 'tba' }> = ({ label, value, source }) => (
   <div className="bg-slate-950/40 rounded-xl p-2 text-center">
-    <span className="text-[9px] uppercase font-bold text-slate-500 block">{label}</span>
-    <span className="text-sm font-bold text-slate-200">{value}</span>
+    <span className="text-[9px] uppercase font-bold text-slate-500 block">{label}{source === 'tba' && <span className="text-blue-500 ml-1">TBA</span>}</span>
+    <span className={`text-sm font-bold ${source === 'tba' ? 'text-blue-300' : 'text-slate-200'}`}>{value}</span>
   </div>
 );
 
@@ -1237,7 +1299,23 @@ function computeAllianceAnalysis(teamNumbers: number[], pitData: Record<number, 
       const lowAcc = tm.filter(m => m.teleopAccuracy === '<50%').length;
       if (lowAcc > tm.length * 0.5 && tm.length >= 2) weaknesses.push(`Team ${num}: Low accuracy (${lowAcc}/${tm.length} matches <50%)`);
     } else {
-      weaknesses.push(`Team ${num}: No match data`);
+      // Use OPR/DPR as fallback when no local match data
+      const tba = tbaTeamData[num];
+      if (tba?.opr != null) {
+        const oprMapped = Math.min(tba.opr / 20, 5);
+        totalOffense += oprMapped;
+        offenseCount++;
+      }
+      if (tba?.dpr != null) {
+        const dprMapped = Math.min(tba.dpr / 20, 5);
+        totalDefense += dprMapped;
+        defenseCount++;
+      }
+      if (!tba?.opr && !tba?.matches?.length) {
+        weaknesses.push(`Team ${num}: No match data`);
+      } else if (!tba?.opr) {
+        weaknesses.push(`Team ${num}: No local scouting data (TBA W-L only)`);
+      }
     }
 
     // TBA cross-event context
@@ -1449,11 +1527,14 @@ const StrategyRecommendation: React.FC<{
     const feederTeams = ourAnalysis.roleAssignments.filter(r => r.recommended === 'Feeder').map(r => r.team);
     const defenseTeams = ourAnalysis.roleAssignments.filter(r => r.recommended === 'Defense').map(r => r.team);
 
-    // Get effective offense score: local data first, TBA win rate fallback, then true unknown
+    // Get effective offense score: local data first, OPR fallback, win-rate fallback, then unknown
     const getTeamOffense = (num: number): number => {
       const tm = matchData.filter(m => m.teamNumber === num);
       if (tm.length > 0) return tm.reduce((s, m) => s + m.offensiveSkill, 0) / tm.length;
       const tba = tbaTeamData[num];
+      // Prefer OPR — it's a direct offensive contribution measure
+      if (tba?.opr != null) return Math.min(tba.opr / 20, 5);
+      // Fall back to win rate
       if (tba?.matches && tba.matches.length > 0) {
         const teamKey = `frc${num}`;
         let wins = 0, total = 0;
@@ -1464,7 +1545,7 @@ const StrategyRecommendation: React.FC<{
             total++; if (m.winning_alliance === 'red') wins++;
           }
         });
-        if (total > 0) return 1 + (wins / total) * 4; // Map 0-100% win rate to 1-5 scale
+        if (total > 0) return 1 + (wins / total) * 4;
       }
       return 3; // True unknown
     };
@@ -1570,16 +1651,27 @@ const StrategyRecommendation: React.FC<{
 
 const StrategyLab: React.FC<{
   pitData: Record<number, PitData>, matchData: MatchData[], availableTeams: Team[], selectedSeason: number,
+  selectedEventKey: string,
   blue: number[], setBlue: React.Dispatch<React.SetStateAction<number[]>>,
   red: number[], setRed: React.Dispatch<React.SetStateAction<number[]>>,
   tbaTeamData: TbaTeamDataMap, setTbaTeamData: React.Dispatch<React.SetStateAction<TbaTeamDataMap>>,
-}> = ({ pitData, matchData, availableTeams, selectedSeason, blue, setBlue, red, setRed, tbaTeamData, setTbaTeamData }) => {
+  isConnected: boolean,
+}> = ({ pitData, matchData, availableTeams, selectedSeason, selectedEventKey, blue, setBlue, red, setRed, tbaTeamData, setTbaTeamData, isConnected }) => {
   const [tbaFetchLoading, setTbaFetchLoading] = useState<Record<number, boolean>>({});
+  const eventDataRef = useRef<{ key: string; rankings: TBARankings | null; oprs: TBAOprs | null } | null>(null);
 
+  // Fetch per-team events/matches
   useEffect(() => {
     const allTeamNums = [...blue, ...red].filter(n => n > 0);
     const newTeams = allTeamNums.filter(n => tbaTeamData[n] === undefined && !tbaFetchLoading[n]);
     if (newTeams.length === 0) return;
+
+    if (!isConnected) {
+      const updates: TbaTeamDataMap = {};
+      for (const num of newTeams) updates[num] = null;
+      setTbaTeamData(prev => ({ ...prev, ...updates }));
+      return;
+    }
 
     for (const num of newTeams) {
       setTbaFetchLoading(prev => ({ ...prev, [num]: true }));
@@ -1587,14 +1679,54 @@ const StrategyLab: React.FC<{
         fetchTbaTeamEvents(num, selectedSeason),
         fetchTbaTeamMatches(num, selectedSeason),
       ]).then(([events, matches]) => {
-        setTbaTeamData(prev => ({ ...prev, [num]: { events, matches } }));
+        const teamKey = `frc${num}`;
+        let totalScore = 0, scoreCount = 0;
+        matches.forEach(m => {
+          if (m.alliances.blue.team_keys.includes(teamKey) && m.alliances.blue.score >= 0) {
+            totalScore += m.alliances.blue.score; scoreCount++;
+          } else if (m.alliances.red.team_keys.includes(teamKey) && m.alliances.red.score >= 0) {
+            totalScore += m.alliances.red.score; scoreCount++;
+          }
+        });
+        const avgScore = scoreCount > 0 ? totalScore / scoreCount : null;
+        setTbaTeamData(prev => ({ ...prev, [num]: { events, matches, avgScore } }));
       }).catch(() => {
         setTbaTeamData(prev => ({ ...prev, [num]: null }));
       }).finally(() => {
         setTbaFetchLoading(prev => ({ ...prev, [num]: false }));
       });
     }
-  }, [blue, red, selectedSeason, tbaTeamData, tbaFetchLoading]);
+  }, [blue, red, selectedSeason, tbaTeamData, tbaFetchLoading, isConnected]);
+
+  // Fetch event-level rankings + OPRs once per event
+  useEffect(() => {
+    if (!isConnected || !selectedEventKey) return;
+    if (eventDataRef.current?.key === selectedEventKey) return;
+    const allTeamNums = [...blue, ...red].filter(n => n > 0);
+    if (allTeamNums.length === 0) return;
+
+    Promise.all([
+      fetchTbaRankings(selectedEventKey).catch(() => null),
+      fetchTbaOprs(selectedEventKey).catch(() => null),
+    ]).then(([rankings, oprs]) => {
+      eventDataRef.current = { key: selectedEventKey, rankings, oprs };
+      setTbaTeamData(prev => {
+        const next = { ...prev };
+        for (const numStr of Object.keys(next)) {
+          const num = Number(numStr);
+          const existing = next[num];
+          if (!existing) continue;
+          const teamKey = `frc${num}`;
+          const ranking = rankings?.rankings?.find(r => r.team_key === teamKey) || null;
+          const oprVal = oprs?.oprs?.[teamKey] ?? null;
+          const dprVal = oprs?.dprs?.[teamKey] ?? null;
+          const ccwmVal = oprs?.ccwms?.[teamKey] ?? null;
+          next[num] = { ...existing, ranking: ranking ? { rank: ranking.rank, record: ranking.record, matches_played: ranking.matches_played } : null, opr: oprVal, dpr: dprVal, ccwm: ccwmVal };
+        }
+        return next;
+      });
+    });
+  }, [isConnected, selectedEventKey, blue, red]);
 
   const anyLoading = [...blue, ...red].some(n => n > 0 && tbaFetchLoading[n]);
   const hasTeams = blue.some(n => n > 0) || red.some(n => n > 0);
@@ -1624,6 +1756,11 @@ const StrategyLab: React.FC<{
         <div className="flex items-center gap-2 text-xs text-slate-500">
           <Loader2 className="w-3 h-3 animate-spin" />
           Loading TBA data for selected teams...
+        </div>
+      )}
+      {!isConnected && hasTeams && (
+        <div className="flex items-center gap-2 text-xs text-amber-400/70">
+          Offline — using local scouting data only. TBA stats unavailable.
         </div>
       )}
       <AllianceStats label="Blue" color="blue" teamNumbers={blue} pitData={pitData} matchData={matchData} tbaTeamData={tbaTeamData} />
