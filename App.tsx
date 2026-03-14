@@ -87,7 +87,8 @@ const STORAGE_KEY_PIT = 'smoky_scout_pit_v3';
 const STORAGE_KEY_MATCH = 'smoky_scout_match_v6';
 const STORAGE_KEY_TBA_CONTEXT = 'smoky_scout_tba_context_v1';
 
-type View = 'dashboard' | 'pit' | 'match' | 'settings' | 'team_detail' | 'strategy' | 'scanner' | 'tba';
+type View = 'dashboard' | 'pit' | 'match' | 'settings' | 'team_detail' | 'strategy' | 'scanner' | 'tba' | 'rankings';
+type RankingsCategory = 'shooter' | 'feeder' | 'climber' | 'defense';
 type TbaTeamDataMap = Record<number, {
   events: TBAEventSimple[];
   matches: TBAMatch[];
@@ -117,6 +118,7 @@ const App: React.FC = () => {
   const [stratBlue, setStratBlue] = useState<number[]>([0, 0, 0]);
   const [stratRed, setStratRed] = useState<number[]>([0, 0, 0]);
   const [stratTbaData, setStratTbaData] = useState<TbaTeamDataMap>({});
+  const scannerReturnView = useRef<View>('settings');
 
   const requirePin = useCallback((callback: (pin: string) => void, title?: string) => {
     const cached = getCachedPin();
@@ -561,7 +563,7 @@ const App: React.FC = () => {
                 }
               }
             }}
-            onBack={() => setView('dashboard')}
+            onBack={() => setView(scannerReturnView.current)}
             onViewTeam={(teamNumber) => {
               const team = teamSource.find(t => t.number === teamNumber);
               if (team) {
@@ -570,6 +572,10 @@ const App: React.FC = () => {
               }
             }}
           />
+        )}
+
+        {view === 'rankings' && (
+          <RankingsView matchData={matchData} pitData={pitData} availableTeams={sortedTeamSource} tbaTeamData={stratTbaData} />
         )}
 
         {view === 'settings' && (
@@ -583,6 +589,7 @@ const App: React.FC = () => {
             isLoadingTba={tbaLoading}
             onSetSeason={handleTbaSeasonChange}
             onShowQR={(data) => setQrModalData(data)}
+            onScanQR={() => { scannerReturnView.current = 'settings'; setView('scanner'); }}
             onClearData={() => {
               requirePin((pin) => {
                 if (!isConnected) {
@@ -618,7 +625,7 @@ const App: React.FC = () => {
         <NavButton active={view === 'dashboard' || view === 'team_detail'} onClick={() => setView('dashboard')} icon={<Users className="w-6 h-6" />} label="Teams" />
         <NavButton active={view === 'strategy'} onClick={() => setView('strategy')} icon={<BrainCircuit className="w-6 h-6" />} label="Strategy" />
         <NavButton active={view === 'tba'} onClick={() => setView('tba')} icon={<Globe className="w-6 h-6" />} label="TBA" />
-        <NavButton active={view === 'scanner'} onClick={() => setView('scanner')} icon={<ScanLine className="w-6 h-6" />} label="Scan" />
+        <NavButton active={view === 'rankings'} onClick={() => setView('rankings')} icon={<Trophy className="w-6 h-6" />} label="Rankings" />
         <NavButton active={view === 'settings'} onClick={() => setView('settings')} icon={<Settings className="w-6 h-6" />} label="Config" />
       </nav>
     </div>
@@ -1809,13 +1816,19 @@ const ConfigView: React.FC<{
   isLoadingTba: { events: boolean; teams: boolean };
   onSetSeason: (season: number) => void;
   onShowQR: (data: string) => void;
+  onScanQR: () => void;
   onClearData: () => void;
-}> = ({ matchData, pitData, isConnected, events, selectedSeason, selectedEventKey, isLoadingTba, onSetSeason, onShowQR, onClearData }) => {
+}> = ({ matchData, pitData, isConnected, events, selectedSeason, selectedEventKey, isLoadingTba, onSetSeason, onShowQR, onScanQR, onClearData }) => {
   const selectedEventName = events.find(event => event.key === selectedEventKey)?.name || 'Static Smoky Mountain team list';
 
   return (
     <div className="space-y-8 pb-12">
       <h2 className="text-3xl font-header text-white">CONFIG</h2>
+
+      <button onClick={onScanQR}
+        className="w-full flex items-center justify-center gap-3 py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-2xl shadow-lg shadow-blue-900/20 active:scale-[0.98] transition-all">
+        <ScanLine className="w-5 h-5" /> Scan QR Code
+      </button>
 
       <div className="space-y-4">
         <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">Competition Teams (Blue Alliance)</h3>
@@ -1915,6 +1928,266 @@ const ConfigView: React.FC<{
             ? 'Deletes all pit and match data from the server and all devices. Requires PIN.'
             : 'Must be online to clear all data (server data would remain).'}
         </p>
+      </div>
+    </div>
+  );
+};
+
+// --- Rankings View ---
+
+const RankingsView: React.FC<{
+  matchData: MatchData[];
+  pitData: Record<number, PitData>;
+  availableTeams: Team[];
+  tbaTeamData: TbaTeamDataMap;
+}> = ({ matchData, pitData, availableTeams, tbaTeamData }) => {
+  const [category, setCategory] = useState<RankingsCategory>('shooter');
+  const [expandedTeam, setExpandedTeam] = useState<number | null>(null);
+  const [foulTooltip, setFoulTooltip] = useState<number | null>(null);
+
+  const handleCategoryChange = (cat: RankingsCategory) => {
+    setCategory(cat);
+    setExpandedTeam(null);
+    setFoulTooltip(null);
+  };
+
+  const rankedTeams = React.useMemo(() => {
+    const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+    const results: {
+      team: Team;
+      score: number;
+      hasData: boolean;
+      details: Record<string, string | number | boolean>;
+    }[] = [];
+
+    if (category === 'shooter') {
+      for (const team of availableTeams) {
+        const tm = matchData.filter(m => m.teamNumber === team.number);
+        const shooterMatches = tm.filter(m => m.teleopRole === 'Shooter');
+        const relevantMatches = shooterMatches.length > 0 ? shooterMatches : tm;
+        if (relevantMatches.length === 0) {
+          results.push({ team, score: 0, hasData: false, details: {} });
+          continue;
+        }
+        const avgOffense = relevantMatches.reduce((s, m) => s + m.offensiveSkill, 0) / relevantMatches.length;
+        const highAccCount = relevantMatches.filter(m => m.teleopAccuracy === '>80%').length;
+        const lowAccCount = relevantMatches.filter(m => m.teleopAccuracy === '<50%').length;
+        let accuracyBoost = 0;
+        if (highAccCount > relevantMatches.length / 2) accuracyBoost = 0.5;
+        else if (lowAccCount > relevantMatches.length / 2) accuracyBoost = -0.5;
+        const score = clamp(avgOffense + accuracyBoost, 0, 5);
+        const avgDef = tm.reduce((s, m) => s + m.defensiveSkill, 0) / tm.length;
+        const winRate = tm.filter(m => m.wonMatch).length / tm.length;
+        const topAcc = highAccCount > relevantMatches.length / 2 ? '>80%' : lowAccCount > relevantMatches.length / 2 ? '<50%' : '50-80%';
+        results.push({
+          team, score, hasData: true,
+          details: { avgOffense: +avgOffense.toFixed(1), avgDefense: +avgDef.toFixed(1), winRate: +(winRate * 100).toFixed(0), accuracy: topAcc, matches: tm.length }
+        });
+      }
+    } else if (category === 'feeder') {
+      // First pass: find max feeder count
+      let maxFeederCount = 0;
+      const feederCounts: Record<number, { count: number; matches: MatchData[] }> = {};
+      for (const team of availableTeams) {
+        const fm = matchData.filter(m => m.teamNumber === team.number && m.teleopRole === 'Feeder');
+        feederCounts[team.number] = { count: fm.length, matches: fm };
+        if (fm.length > maxFeederCount) maxFeederCount = fm.length;
+      }
+      for (const team of availableTeams) {
+        const { count, matches: fm } = feederCounts[team.number];
+        const tm = matchData.filter(m => m.teamNumber === team.number);
+        if (count === 0) {
+          results.push({ team, score: 0, hasData: false, details: {} });
+          continue;
+        }
+        const avgTransition = fm.reduce((s, m) => s + m.transitionQuickness, 0) / fm.length;
+        const winRate = fm.filter(m => m.wonMatch).length / fm.length;
+        const score = maxFeederCount === 0 ? 0 : clamp((count / maxFeederCount) * 2 + (avgTransition / 5) * 2 + winRate * 1, 0, 5);
+        results.push({
+          team, score, hasData: true,
+          details: { feederMatches: count, totalMatches: tm.length, avgTransition: +avgTransition.toFixed(1), winRate: +(winRate * 100).toFixed(0) }
+        });
+      }
+    } else if (category === 'climber') {
+      for (const team of availableTeams) {
+        const tm = matchData.filter(m => m.teamNumber === team.number);
+        const pit = pitData[team.number];
+        const pitMaxLevel = pit?.climb?.maxLevel === 'L3' ? 3 : pit?.climb?.maxLevel === 'L2' ? 2 : pit?.climb?.maxLevel === 'L1' ? 1 : 0;
+        if (tm.length === 0 && !pit?.climb) {
+          results.push({ team, score: 0, hasData: false, details: {} });
+          continue;
+        }
+        const maxClimbFromMatches = tm.length > 0 ? Math.max(...tm.map(m => m.climbLevel)) : 0;
+        const maxClimb = Math.max(maxClimbFromMatches, pitMaxLevel);
+        const autoClimbFromMatches = tm.length > 0 && tm.filter(m => m.autoClimbLevel > 0).length > tm.length / 2;
+        const canAutoClimb = pit?.climb?.canAutoClimb || autoClimbFromMatches;
+        const autoBonus = canAutoClimb ? 2 : 0;
+        const score = clamp(autoBonus + maxClimb, 0, 5);
+        const nonNoShow = tm.filter(m => !m.noShow);
+        const consistency = nonNoShow.length > 0 ? nonNoShow.filter(m => m.climbLevel > 0).length / nonNoShow.length : 0;
+        results.push({
+          team, score, hasData: true,
+          details: { maxClimb: `L${maxClimb}`, canAutoClimb, consistency: +(consistency * 100).toFixed(0), matches: tm.length }
+        });
+      }
+    } else if (category === 'defense') {
+      for (const team of availableTeams) {
+        const tm = matchData.filter(m => m.teamNumber === team.number);
+        if (tm.length === 0) {
+          results.push({ team, score: 0, hasData: false, details: {} });
+          continue;
+        }
+        const avgDefense = tm.reduce((s, m) => s + m.defensiveSkill, 0) / tm.length;
+        const avgMinorFouls = tm.reduce((s, m) => s + m.minorFouls, 0) / tm.length;
+        const avgMajorFouls = tm.reduce((s, m) => s + m.majorFouls, 0) / tm.length;
+        const hasFoulFlag = (avgMinorFouls + avgMajorFouls) > 0.5;
+        results.push({
+          team, score: +avgDefense.toFixed(1), hasData: true,
+          details: { avgDefense: +avgDefense.toFixed(1), avgMinorFouls: +avgMinorFouls.toFixed(1), avgMajorFouls: +avgMajorFouls.toFixed(1), hasFoulFlag, matches: tm.length }
+        });
+      }
+    }
+
+    // Sort: hasData teams by score desc, then no-data teams at bottom
+    results.sort((a, b) => {
+      if (a.hasData && !b.hasData) return -1;
+      if (!a.hasData && b.hasData) return 1;
+      if (a.score !== b.score) return b.score - a.score;
+      // Tiebreak for climber: consistency
+      if (category === 'climber' && a.hasData && b.hasData) {
+        return (b.details.consistency as number || 0) - (a.details.consistency as number || 0);
+      }
+      return a.team.number - b.team.number;
+    });
+
+    return results;
+  }, [matchData, pitData, availableTeams, category]);
+
+  const pills: { key: RankingsCategory; label: string }[] = [
+    { key: 'shooter', label: 'Shooter' },
+    { key: 'feeder', label: 'Feeder' },
+    { key: 'climber', label: 'Climber' },
+    { key: 'defense', label: 'Defense' },
+  ];
+
+  let dataRank = 0;
+
+  return (
+    <div className="space-y-6 pb-12">
+      <h2 className="text-3xl font-header text-white">RANKINGS</h2>
+
+      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+        {pills.map(p => (
+          <button key={p.key} onClick={() => handleCategoryChange(p.key)}
+            className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap transition-all ${
+              category === p.key
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/30'
+                : 'bg-slate-900 text-slate-400 border border-slate-700 hover:border-slate-600'
+            }`}>
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="space-y-2">
+        {rankedTeams.map(({ team, score, hasData, details }) => {
+          if (hasData) dataRank++;
+          const isExpanded = expandedTeam === team.number;
+          const teamMatches = matchData.filter(m => m.teamNumber === team.number);
+          const pit = pitData[team.number];
+          const tba = tbaTeamData[team.number];
+
+          // Compute common expanded stats
+          const avgOff = teamMatches.length > 0 ? (teamMatches.reduce((s, m) => s + m.offensiveSkill, 0) / teamMatches.length).toFixed(1) : 'N/A';
+          const avgDef = teamMatches.length > 0 ? (teamMatches.reduce((s, m) => s + m.defensiveSkill, 0) / teamMatches.length).toFixed(1) : 'N/A';
+          const winPct = teamMatches.length > 0 ? Math.round(teamMatches.filter(m => m.wonMatch).length / teamMatches.length * 100) + '%' : 'N/A';
+          const maxClimb = teamMatches.length > 0 ? 'L' + Math.max(...teamMatches.map(m => m.climbLevel)) : (pit?.climb?.maxLevel || 'N/A');
+          const driveType = pit?.drivetrain?.type || 'N/A';
+          const topRole = teamMatches.length > 0
+            ? (['Shooter', 'Feeder', 'Defense'] as const).reduce((best, role) => {
+                const c = teamMatches.filter(m => m.teleopRole === role).length;
+                return c > best.count ? { role, count: c } : best;
+              }, { role: 'N/A' as string, count: 0 }).role
+            : (pit?.selfAssessedRole || 'N/A');
+          const fps = pit?.scoring?.scoringRate || 'N/A';
+          const topAcc = teamMatches.length > 0
+            ? (['> 80%', '50-80%', '<50%'] as const).reduce((best, acc) => {
+                const c = teamMatches.filter(m => m.teleopAccuracy === acc).length;
+                return c > best.count ? { acc, count: c } : best;
+              }, { acc: 'N/A' as string, count: 0 }).acc
+            : 'N/A';
+
+          return (
+            <div key={team.number}>
+              <button
+                onClick={() => hasData && setExpandedTeam(isExpanded ? null : team.number)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl transition-all ${
+                  hasData
+                    ? 'bg-slate-900 border border-slate-800 hover:border-slate-700 active:scale-[0.99]'
+                    : 'bg-slate-900/40 border border-slate-800/50'
+                }`}>
+                {hasData ? (
+                  <span className="text-blue-400 font-bold text-sm w-8 text-right">#{dataRank}</span>
+                ) : (
+                  <span className="w-8" />
+                )}
+                <div className="flex-1 text-left">
+                  <span className={`font-bold ${hasData ? 'text-slate-200' : 'text-slate-600'}`}>
+                    {team.number}
+                  </span>
+                  <span className={`ml-2 text-sm ${hasData ? 'text-slate-400' : 'text-slate-600'}`}>
+                    {team.name}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {hasData && category === 'defense' && details.hasFoulFlag && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setFoulTooltip(foulTooltip === team.number ? null : team.number); }}
+                      className="relative text-amber-400 hover:text-amber-300">
+                      <AlertTriangle className="w-4 h-4" />
+                      {foulTooltip === team.number && (
+                        <div className="absolute bottom-full right-0 mb-2 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 whitespace-nowrap z-10 shadow-xl">
+                          Minor: {details.avgMinorFouls}/match | Major: {details.avgMajorFouls}/match
+                        </div>
+                      )}
+                    </button>
+                  )}
+                  <span className={`text-sm font-bold ${hasData ? 'text-slate-200' : 'text-slate-600'}`}>
+                    {hasData ? `${score}/5` : 'No data'}
+                  </span>
+                  {hasData && (
+                    <ChevronRight className={`w-4 h-4 text-slate-500 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                  )}
+                </div>
+              </button>
+
+              {isExpanded && hasData && (
+                <div className="mx-2 mt-1 mb-2 bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3 animate-in slide-in-from-top-2">
+                  <div className="grid grid-cols-4 gap-2">
+                    <StatBox label="Off" value={avgOff} />
+                    <StatBox label="Def" value={avgDef} />
+                    <StatBox label="Win%" value={winPct} />
+                    <StatBox label="Climb" value={maxClimb} />
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    <StatBox label="Drive" value={driveType} />
+                    <StatBox label="Role" value={topRole} />
+                    <StatBox label="FPS" value={fps} />
+                    <StatBox label="Acc" value={topAcc} />
+                  </div>
+                  {tba && (tba.opr != null || tba.dpr != null || tba.ranking) && (
+                    <div className="grid grid-cols-3 gap-2">
+                      <StatBox label="OPR" value={tba.opr != null ? tba.opr.toFixed(1) : 'N/A'} source="tba" />
+                      <StatBox label="DPR" value={tba.dpr != null ? tba.dpr.toFixed(1) : 'N/A'} source="tba" />
+                      <StatBox label="W-L" value={tba.ranking ? `${tba.ranking.record.wins}-${tba.ranking.record.losses}` : 'N/A'} source="tba" />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
