@@ -1,5 +1,8 @@
+export type PinType = 'edit' | 'admin';
+
 const API_BASE = '/api';
-const PIN_CACHE_KEY = 'hsuscout_pin_cache';
+const EDIT_PIN_CACHE_KEY = 'hsuscout_edit_pin_cache';
+const ADMIN_PIN_CACHE_KEY = 'hsuscout_admin_pin_cache';
 const PIN_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 export async function pinStatus(): Promise<{ isSet: boolean }> {
@@ -8,36 +11,27 @@ export async function pinStatus(): Promise<{ isSet: boolean }> {
   return res.json();
 }
 
-export async function pinSetup(pin: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/pin/setup`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pin }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Setup failed' }));
-    throw new Error(err.error);
-  }
-}
-
-export async function pinVerify(pin: string): Promise<boolean> {
+export async function pinVerify(pin: string): Promise<{ valid: boolean; role?: 'edit' | 'admin' }> {
   const res = await fetch(`${API_BASE}/pin/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pin }),
   });
   if (!res.ok) throw new Error('Failed to verify PIN');
-  const data = await res.json();
-  return data.valid;
+  return res.json();
 }
 
-export function getCachedPin(): string | null {
+function cacheKeyFor(type: PinType): string {
+  return type === 'admin' ? ADMIN_PIN_CACHE_KEY : EDIT_PIN_CACHE_KEY;
+}
+
+export function getCachedPin(type: PinType): string | null {
   try {
-    const raw = sessionStorage.getItem(PIN_CACHE_KEY);
+    const raw = sessionStorage.getItem(cacheKeyFor(type));
     if (!raw) return null;
     const { pin, expires } = JSON.parse(raw);
     if (Date.now() > expires) {
-      sessionStorage.removeItem(PIN_CACHE_KEY);
+      sessionStorage.removeItem(cacheKeyFor(type));
       return null;
     }
     return pin;
@@ -46,13 +40,14 @@ export function getCachedPin(): string | null {
   }
 }
 
-export function cachePin(pin: string): void {
-  sessionStorage.setItem(PIN_CACHE_KEY, JSON.stringify({
+export function cachePin(pin: string, type: PinType): void {
+  sessionStorage.setItem(cacheKeyFor(type), JSON.stringify({
     pin,
     expires: Date.now() + PIN_CACHE_TTL,
   }));
 }
 
 export function clearPinCache(): void {
-  sessionStorage.removeItem(PIN_CACHE_KEY);
+  sessionStorage.removeItem(EDIT_PIN_CACHE_KEY);
+  sessionStorage.removeItem(ADMIN_PIN_CACHE_KEY);
 }

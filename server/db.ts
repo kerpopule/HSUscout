@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { hashPin } from './lib/hash.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.join(__dirname, '..', 'data', 'scout.db');
@@ -41,6 +42,19 @@ db.exec(`
     fetched_at INTEGER NOT NULL
   );
 `);
+
+// Clean up old single-PIN key
+db.prepare('DELETE FROM app_settings WHERE key = ?').run('pin_hash');
+
+// Seed edit PIN (8778) and admin PIN (1123) if not present
+const editPinExists = db.prepare('SELECT value FROM app_settings WHERE key = ?').get('edit_pin_hash') as { value: string } | undefined;
+if (!editPinExists) {
+  db.prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)').run('edit_pin_hash', hashPin('8778'));
+}
+const adminPinExists = db.prepare('SELECT value FROM app_settings WHERE key = ?').get('admin_pin_hash') as { value: string } | undefined;
+if (!adminPinExists) {
+  db.prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)').run('admin_pin_hash', hashPin('1123'));
+}
 
 export const upsertPitData = db.prepare(`
   INSERT INTO pit_data (team_number, data, last_updated, source_device)

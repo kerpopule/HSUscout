@@ -2,16 +2,13 @@ import React, { useState, useCallback } from 'react';
 import { X, Delete } from 'lucide-react';
 
 interface PinPadProps {
-  mode: 'setup' | 'verify';
   title?: string;
   onSuccess: (pin: string) => void;
   onCancel: () => void;
 }
 
-export const PinPad: React.FC<PinPadProps> = ({ mode, title, onSuccess, onCancel }) => {
+export const PinPad: React.FC<PinPadProps> = ({ title, onSuccess, onCancel }) => {
   const [pin, setPin] = useState('');
-  const [confirmPin, setConfirmPin] = useState('');
-  const [phase, setPhase] = useState<'enter' | 'confirm'>('enter');
   const [error, setError] = useState('');
   const [shake, setShake] = useState(false);
 
@@ -20,44 +17,25 @@ export const PinPad: React.FC<PinPadProps> = ({ mode, title, onSuccess, onCancel
     setTimeout(() => setShake(false), 500);
   }, []);
 
-  const currentPin = phase === 'confirm' ? confirmPin : pin;
-  const setCurrentPin = phase === 'confirm' ? setConfirmPin : setPin;
-
   const handleDigit = (digit: string) => {
-    if (currentPin.length >= 4) return;
-    const next = currentPin + digit;
-    setCurrentPin(next);
+    if (pin.length >= 4) return;
+    const next = pin + digit;
+    setPin(next);
     setError('');
 
     if (next.length === 4) {
       setTimeout(() => {
-        if (mode === 'setup') {
-          if (phase === 'enter') {
-            setPhase('confirm');
-          } else {
-            if (next === pin) {
-              onSuccess(pin);
-            } else {
-              setError('PINs don\'t match');
-              setConfirmPin('');
-              triggerShake();
-            }
-          }
-        } else {
-          onSuccess(next);
-        }
+        onSuccess(next);
       }, 150);
     }
   };
 
   const handleBackspace = () => {
-    setCurrentPin(currentPin.slice(0, -1));
+    setPin(pin.slice(0, -1));
     setError('');
   };
 
-  const headerText = title || (mode === 'setup'
-    ? (phase === 'enter' ? 'Set a PIN' : 'Confirm PIN')
-    : 'Enter PIN');
+  const headerText = title || 'Enter PIN';
 
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4" onClick={onCancel}>
@@ -74,7 +52,7 @@ export const PinPad: React.FC<PinPadProps> = ({ mode, title, onSuccess, onCancel
             <div
               key={i}
               className={`w-4 h-4 rounded-full border-2 transition-all ${
-                i < currentPin.length
+                i < pin.length
                   ? 'bg-blue-500 border-blue-500'
                   : 'border-slate-600'
               }`}

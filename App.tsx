@@ -28,7 +28,7 @@ import {
 } from './lib/api';
 import { addToSyncQueue, getSyncQueue, startSyncService } from './lib/sync';
 import { encodeMatchData, encodeBulkMatchData, encodePitData, encodeBulkPitData, encodeAllData, DecodedQRData } from './lib/qr-encode';
-import { pinStatus, pinSetup, pinVerify, getCachedPin, cachePin } from './lib/pin';
+import { pinVerify, getCachedPin, cachePin, PinType } from './lib/pin';
 import { Button } from './components/Button';
 import { Input, Toggle, Select, RadioGroup } from './components/Input';
 import { SyncStatus } from './components/SyncStatus';
@@ -112,7 +112,7 @@ const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [pendingSync, setPendingSync] = useState(getSyncQueue().length);
   const [qrModalData, setQrModalData] = useState<string | null>(null);
-  const [pinModal, setPinModal] = useState<{ mode: 'setup' | 'verify'; onSuccess: (pin: string) => void; title?: string } | null>(null);
+  const [pinModal, setPinModal] = useState<{ onSuccess: (pin: string) => void; title?: string; pinType: PinType } | null>(null);
   const [editingMatch, setEditingMatch] = useState<MatchData | null>(null);
   const [tbaLoading, setTbaLoading] = useState({ events: false, teams: false });
   const [stratBlue, setStratBlue] = useState<number[]>([0, 0, 0]);
@@ -120,34 +120,26 @@ const App: React.FC = () => {
   const [stratTbaData, setStratTbaData] = useState<TbaTeamDataMap>({});
   const scannerReturnView = useRef<View>('settings');
 
-  const requirePin = useCallback((callback: (pin: string) => void, title?: string) => {
-    const cached = getCachedPin();
+  const requirePin = useCallback((pinType: PinType, callback: (pin: string) => void, title?: string) => {
+    const cached = getCachedPin(pinType);
     if (cached) {
       callback(cached);
       return;
     }
-    pinStatus().then(({ isSet }) => {
-      setPinModal({
-        mode: isSet ? 'verify' : 'setup',
-        title,
-        onSuccess: async (pin: string) => {
-          if (!isSet) {
-            try {
-              await pinSetup(pin);
-            } catch {
-              return;
-            }
-          } else {
-            const valid = await pinVerify(pin);
-            if (!valid) return;
-          }
-          cachePin(pin);
+    setPinModal({
+      pinType,
+      title: title || (pinType === 'admin' ? 'Enter Admin PIN' : 'Enter PIN'),
+      onSuccess: async (pin: string) => {
+        try {
+          const result = await pinVerify(pin);
+          if (!result.valid || result.role !== pinType) return;
+          cachePin(pin, pinType);
           setPinModal(null);
           callback(pin);
-        },
-      });
-    }).catch(() => {
-      alert('Cannot verify PIN while offline.');
+        } catch {
+          alert('Cannot verify PIN while offline.');
+        }
+      },
     });
   }, []);
 
@@ -345,7 +337,6 @@ const App: React.FC = () => {
       {qrModalData && <QRCodeModal data={qrModalData} onClose={() => setQrModalData(null)} />}
       {pinModal && (
         <PinPad
-          mode={pinModal.mode}
           title={pinModal.title}
           onSuccess={pinModal.onSuccess}
           onCancel={() => setPinModal(null)}
@@ -452,20 +443,20 @@ const App: React.FC = () => {
             onShowMatchQR={(m) => setQrModalData(encodeMatchData(m))}
             onShowPitQR={(p) => setQrModalData(encodePitData(p))}
             onEditMatch={(m) => {
-              requirePin((pin) => {
+              requirePin('edit', (pin) => {
                 setEditingMatch(m);
                 setView('match');
               });
             }}
             onDeleteMatch={(m) => {
-              requirePin((pin) => {
+              requirePin('edit', (pin) => {
                 if (!confirm(`Delete Match #${m.matchNumber}?`)) return;
                 deleteMatchData(m.id, pin).catch(() => {});
                 setMatchData(prev => prev.filter(x => x.id !== m.id));
               });
             }}
             onDeletePit={() => {
-              requirePin((pin) => {
+              requirePin('edit', (pin) => {
                 if (!confirm(`Delete pit data for Team ${selectedTeam.number}?`)) return;
                 deletePitData(selectedTeam.number, pin).catch(() => {});
                 setPitData(prev => {
@@ -500,7 +491,7 @@ const App: React.FC = () => {
             initialData={editingMatch || undefined}
             onSave={(d) => {
               if (editingMatch) {
-                const pin = getCachedPin();
+                const pin = getCachedPin('edit');
                 setMatchData(prev => prev.map(m => m.id === d.id ? d : m));
                 if (pin) updateMatchDataOnServer(d, pin).catch(() => {});
                 setEditingMatch(null);
@@ -591,7 +582,7 @@ const App: React.FC = () => {
             onShowQR={(data) => setQrModalData(data)}
             onScanQR={() => { scannerReturnView.current = 'settings'; setView('scanner'); }}
             onClearData={() => {
-              requirePin((pin) => {
+              requirePin('admin', (pin) => {
                 if (!isConnected) {
                   alert('Cannot clear all data while offline. Server data would remain.');
                   return;

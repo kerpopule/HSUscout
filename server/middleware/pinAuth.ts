@@ -3,9 +3,11 @@ import { getSetting } from '../db.js';
 import { hashPin } from '../lib/hash.js';
 
 export function pinAuth(req: Request, res: Response, next: NextFunction): void {
-  const storedHash = getSetting.get('pin_hash') as { value: string } | undefined;
-  if (!storedHash) {
-    res.status(403).json({ error: 'No PIN configured' });
+  const editHash = getSetting.get('edit_pin_hash') as { value: string } | undefined;
+  const adminHash = getSetting.get('admin_pin_hash') as { value: string } | undefined;
+
+  if (!editHash && !adminHash) {
+    res.status(403).json({ error: 'No PINs configured' });
     return;
   }
 
@@ -15,7 +17,8 @@ export function pinAuth(req: Request, res: Response, next: NextFunction): void {
     return;
   }
 
-  if (hashPin(pin) !== storedHash.value) {
+  const hashed = hashPin(pin);
+  if (hashed !== editHash?.value && hashed !== adminHash?.value) {
     res.status(401).json({ error: 'Wrong PIN' });
     return;
   }
