@@ -119,6 +119,7 @@ const App: React.FC = () => {
   const [stratRed, setStratRed] = useState<number[]>([0, 0, 0]);
   const [stratTbaData, setStratTbaData] = useState<TbaTeamDataMap>({});
   const scannerReturnView = useRef<View>('settings');
+  const syncRef = useRef<{ stop: () => void; pause: () => void; resume: () => void } | null>(null);
 
   const requirePin = useCallback((pinType: PinType, callback: (pin: string) => void, title?: string) => {
     const cached = getCachedPin(pinType);
@@ -138,7 +139,9 @@ const App: React.FC = () => {
           }
           cachePin(pin, pinType);
           setPinModal(null);
-          callback(pin);
+          // Defer callback to next tick so PinPad unmounts cleanly before
+          // callback runs (which may call confirm() and block the thread)
+          setTimeout(() => callback(pin), 0);
         } catch {
           setPinModal(prev => prev ? { ...prev, errorCount: prev.errorCount + 1 } : null);
         }
@@ -250,7 +253,7 @@ const App: React.FC = () => {
 
   // Sync service
   useEffect(() => {
-    const stopSync = startSyncService({
+    const sync = startSyncService({
       onConnectionChange: setIsConnected,
       onDataRefresh: (pit, match) => {
         setPitData(pit);
@@ -258,7 +261,8 @@ const App: React.FC = () => {
       },
       onQueueDrained: () => setPendingSync(0),
     });
-    return stopSync;
+    syncRef.current = sync;
+    return () => { sync.stop(); syncRef.current = null; };
   }, []);
 
   const exportToCSV = useCallback(() => {
@@ -592,13 +596,16 @@ const App: React.FC = () => {
                   return;
                 }
                 if (!confirm('This will permanently delete ALL pit and match data from the server and this device. Are you sure?')) return;
+                syncRef.current?.pause();
                 clearAllServerData(pin).then(() => {
                   setPitData({});
                   setMatchData([]);
                   localStorage.removeItem(STORAGE_KEY_PIT);
                   localStorage.removeItem(STORAGE_KEY_MATCH);
+                  setTimeout(() => syncRef.current?.resume(), 2000);
                 }).catch(() => {
                   alert('Failed to clear server data.');
+                  syncRef.current?.resume();
                 });
               });
             }}

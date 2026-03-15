@@ -28,10 +28,12 @@ export function startSyncService(callbacks: {
   onConnectionChange: (connected: boolean) => void;
   onDataRefresh: (pit: Record<number, PitData>, match: MatchData[]) => void;
   onQueueDrained: () => void;
-}): () => void {
+}): { stop: () => void; pause: () => void; resume: () => void } {
   let running = true;
+  let paused = false;
 
   const doSync = async () => {
+    if (paused) return;
     const connected = await checkHealth();
     callbacks.onConnectionChange(connected);
 
@@ -71,8 +73,9 @@ export function startSyncService(callbacks: {
   const onOnline = () => { doSync(); };
   window.addEventListener('online', onOnline);
 
-  return () => {
-    running = false;
-    window.removeEventListener('online', onOnline);
+  return {
+    stop: () => { running = false; window.removeEventListener('online', onOnline); },
+    pause: () => { paused = true; },
+    resume: () => { paused = false; },
   };
 }
