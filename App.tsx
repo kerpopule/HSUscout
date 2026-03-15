@@ -136,7 +136,6 @@ const App: React.FC = () => {
             return false;
           }
           cachePin(pin, pinType);
-          setPinModal(null);
           setTimeout(() => callback(pin), 0);
           return true;
         } catch {

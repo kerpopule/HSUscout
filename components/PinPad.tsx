@@ -14,7 +14,10 @@ export const PinPad: React.FC<PinPadProps> = ({ title, onSubmit, onCancel }) => 
   const [waiting, setWaiting] = useState(false);
   const mounted = useRef(true);
 
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const triggerShake = useCallback(() => {
     setShake(true);
@@ -32,7 +35,10 @@ export const PinPad: React.FC<PinPadProps> = ({ title, onSubmit, onCancel }) => 
         setWaiting(true);
         const success = await onSubmit(next);
         if (!mounted.current) return;
-        if (success) return;
+        if (success) {
+          onCancel();
+          return;
+        }
         setError('Wrong PIN');
         setPin('');
         setWaiting(false);
