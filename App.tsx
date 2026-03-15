@@ -112,7 +112,7 @@ const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [pendingSync, setPendingSync] = useState(getSyncQueue().length);
   const [qrModalData, setQrModalData] = useState<string | null>(null);
-  const [pinModal, setPinModal] = useState<{ onSubmit: (pin: string) => void; title?: string; errorCount: number } | null>(null);
+  const [pinModal, setPinModal] = useState<{ onSubmit: (pin: string) => Promise<boolean>; title?: string } | null>(null);
   const [editingMatch, setEditingMatch] = useState<MatchData | null>(null);
   const [tbaLoading, setTbaLoading] = useState({ events: false, teams: false });
   const [stratBlue, setStratBlue] = useState<number[]>([0, 0, 0]);
@@ -129,21 +129,18 @@ const App: React.FC = () => {
     }
     setPinModal({
       title: title || (pinType === 'admin' ? 'Enter Admin PIN' : 'Enter PIN'),
-      errorCount: 0,
-      onSubmit: async (pin: string) => {
+      onSubmit: async (pin: string): Promise<boolean> => {
         try {
           const result = await pinVerify(pin);
           if (!result.valid || result.role !== pinType) {
-            setPinModal(prev => prev ? { ...prev, errorCount: prev.errorCount + 1 } : null);
-            return;
+            return false;
           }
           cachePin(pin, pinType);
           setPinModal(null);
-          // Defer callback to next tick so PinPad unmounts cleanly before
-          // callback runs (which may call confirm() and block the thread)
           setTimeout(() => callback(pin), 0);
+          return true;
         } catch {
-          setPinModal(prev => prev ? { ...prev, errorCount: prev.errorCount + 1 } : null);
+          return false;
         }
       },
     });
@@ -346,7 +343,6 @@ const App: React.FC = () => {
         <PinPad
           title={pinModal.title}
           onSubmit={pinModal.onSubmit}
-          errorCount={pinModal.errorCount}
           onCancel={() => setPinModal(null)}
         />
       )}

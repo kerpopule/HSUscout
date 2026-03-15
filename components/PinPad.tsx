@@ -1,32 +1,25 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { X, Delete } from 'lucide-react';
 
 interface PinPadProps {
   title?: string;
-  onSubmit: (pin: string) => void;
+  onSubmit: (pin: string) => Promise<boolean>;
   onCancel: () => void;
-  errorCount: number;
 }
 
-export const PinPad: React.FC<PinPadProps> = ({ title, onSubmit, onCancel, errorCount }) => {
+export const PinPad: React.FC<PinPadProps> = ({ title, onSubmit, onCancel }) => {
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [shake, setShake] = useState(false);
   const [waiting, setWaiting] = useState(false);
+  const mounted = useRef(true);
+
+  useEffect(() => () => { mounted.current = false; }, []);
 
   const triggerShake = useCallback(() => {
     setShake(true);
     setTimeout(() => setShake(false), 500);
   }, []);
-
-  useEffect(() => {
-    if (errorCount > 0) {
-      setError('Wrong PIN');
-      setPin('');
-      setWaiting(false);
-      triggerShake();
-    }
-  }, [errorCount, triggerShake]);
 
   const handleDigit = (digit: string) => {
     if (pin.length >= 4 || waiting) return;
@@ -35,9 +28,15 @@ export const PinPad: React.FC<PinPadProps> = ({ title, onSubmit, onCancel, error
     setError('');
 
     if (next.length === 4) {
-      setTimeout(() => {
+      setTimeout(async () => {
         setWaiting(true);
-        onSubmit(next);
+        const success = await onSubmit(next);
+        if (!mounted.current) return;
+        if (success) return;
+        setError('Wrong PIN');
+        setPin('');
+        setWaiting(false);
+        triggerShake();
       }, 150);
     }
   };
