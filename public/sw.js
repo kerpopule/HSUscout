@@ -1,4 +1,4 @@
-const CACHE_NAME = 'smoky-scout-v2';
+const CACHE_NAME = 'smoky-scout-v3';
 
 // Cache everything the app needs to run offline
 self.addEventListener('install', (event) => {

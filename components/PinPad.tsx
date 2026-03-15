@@ -3,7 +3,7 @@ import { X, Delete } from 'lucide-react';
 
 interface PinPadProps {
   title?: string;
-  onSubmit: (pin: string) => Promise<boolean>;
+  onSubmit: (pin: string) => Promise<boolean | 'error'>;
   onCancel: () => void;
 }
 
@@ -31,19 +31,18 @@ export const PinPad: React.FC<PinPadProps> = ({ title, onSubmit, onCancel }) => 
     setError('');
 
     if (next.length === 4) {
-      setTimeout(async () => {
-        setWaiting(true);
-        const success = await onSubmit(next);
+      setWaiting(true);
+      onSubmit(next).then(result => {
         if (!mounted.current) return;
-        if (success) {
+        if (result === true) {
           onCancel();
           return;
         }
-        setError('Wrong PIN');
+        setError(result === 'error' ? 'Connection error — try again' : 'Wrong PIN');
         setPin('');
         setWaiting(false);
         triggerShake();
-      }, 150);
+      });
     }
   };
 
