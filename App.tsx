@@ -112,7 +112,7 @@ const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [pendingSync, setPendingSync] = useState(getSyncQueue().length);
   const [qrModalData, setQrModalData] = useState<string | null>(null);
-  const [pinModal, setPinModal] = useState<{ onVerify: (pin: string) => Promise<boolean>; title?: string } | null>(null);
+  const [pinModal, setPinModal] = useState<{ onSubmit: (pin: string) => void; title?: string; errorCount: number } | null>(null);
   const [editingMatch, setEditingMatch] = useState<MatchData | null>(null);
   const [tbaLoading, setTbaLoading] = useState({ events: false, teams: false });
   const [stratBlue, setStratBlue] = useState<number[]>([0, 0, 0]);
@@ -128,13 +128,20 @@ const App: React.FC = () => {
     }
     setPinModal({
       title: title || (pinType === 'admin' ? 'Enter Admin PIN' : 'Enter PIN'),
-      onVerify: async (pin: string): Promise<boolean> => {
-        const result = await pinVerify(pin);
-        if (!result.valid || result.role !== pinType) return false;
-        cachePin(pin, pinType);
-        setPinModal(null);
-        callback(pin);
-        return true;
+      errorCount: 0,
+      onSubmit: async (pin: string) => {
+        try {
+          const result = await pinVerify(pin);
+          if (!result.valid || result.role !== pinType) {
+            setPinModal(prev => prev ? { ...prev, errorCount: prev.errorCount + 1 } : null);
+            return;
+          }
+          cachePin(pin, pinType);
+          setPinModal(null);
+          callback(pin);
+        } catch {
+          setPinModal(prev => prev ? { ...prev, errorCount: prev.errorCount + 1 } : null);
+        }
       },
     });
   }, []);
@@ -334,7 +341,8 @@ const App: React.FC = () => {
       {pinModal && (
         <PinPad
           title={pinModal.title}
-          onVerify={pinModal.onVerify}
+          onSubmit={pinModal.onSubmit}
+          errorCount={pinModal.errorCount}
           onCancel={() => setPinModal(null)}
         />
       )}

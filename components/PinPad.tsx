@@ -1,55 +1,49 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { X, Delete } from 'lucide-react';
 
 interface PinPadProps {
   title?: string;
-  onVerify: (pin: string) => Promise<boolean>;
+  onSubmit: (pin: string) => void;
   onCancel: () => void;
+  errorCount: number;
 }
 
-export const PinPad: React.FC<PinPadProps> = ({ title, onVerify, onCancel }) => {
+export const PinPad: React.FC<PinPadProps> = ({ title, onSubmit, onCancel, errorCount }) => {
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [shake, setShake] = useState(false);
-  const [verifying, setVerifying] = useState(false);
-  const verifyingRef = useRef(false);
+  const [waiting, setWaiting] = useState(false);
 
   const triggerShake = useCallback(() => {
     setShake(true);
     setTimeout(() => setShake(false), 500);
   }, []);
 
+  useEffect(() => {
+    if (errorCount > 0) {
+      setError('Wrong PIN');
+      setPin('');
+      setWaiting(false);
+      triggerShake();
+    }
+  }, [errorCount, triggerShake]);
+
   const handleDigit = (digit: string) => {
-    if (pin.length >= 4 || verifyingRef.current) return;
+    if (pin.length >= 4 || waiting) return;
     const next = pin + digit;
     setPin(next);
     setError('');
 
     if (next.length === 4) {
-      setTimeout(async () => {
-        setVerifying(true);
-        verifyingRef.current = true;
-        try {
-          const ok = await onVerify(next);
-          if (!ok) {
-            setError('Wrong PIN');
-            setPin('');
-            triggerShake();
-          }
-        } catch {
-          setError('Cannot verify PIN');
-          setPin('');
-          triggerShake();
-        } finally {
-          setVerifying(false);
-          verifyingRef.current = false;
-        }
+      setTimeout(() => {
+        setWaiting(true);
+        onSubmit(next);
       }, 150);
     }
   };
 
   const handleBackspace = () => {
-    if (verifyingRef.current) return;
+    if (waiting) return;
     setPin(pin.slice(0, -1));
     setError('');
   };
