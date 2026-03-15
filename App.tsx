@@ -112,7 +112,7 @@ const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [pendingSync, setPendingSync] = useState(getSyncQueue().length);
   const [qrModalData, setQrModalData] = useState<string | null>(null);
-  const [pinModal, setPinModal] = useState<{ onSuccess: (pin: string) => void; title?: string; pinType: PinType } | null>(null);
+  const [pinModal, setPinModal] = useState<{ onVerify: (pin: string) => Promise<boolean>; title?: string } | null>(null);
   const [editingMatch, setEditingMatch] = useState<MatchData | null>(null);
   const [tbaLoading, setTbaLoading] = useState({ events: false, teams: false });
   const [stratBlue, setStratBlue] = useState<number[]>([0, 0, 0]);
@@ -127,18 +127,14 @@ const App: React.FC = () => {
       return;
     }
     setPinModal({
-      pinType,
       title: title || (pinType === 'admin' ? 'Enter Admin PIN' : 'Enter PIN'),
-      onSuccess: async (pin: string) => {
-        try {
-          const result = await pinVerify(pin);
-          if (!result.valid || result.role !== pinType) return;
-          cachePin(pin, pinType);
-          setPinModal(null);
-          callback(pin);
-        } catch {
-          alert('Cannot verify PIN while offline.');
-        }
+      onVerify: async (pin: string): Promise<boolean> => {
+        const result = await pinVerify(pin);
+        if (!result.valid || result.role !== pinType) return false;
+        cachePin(pin, pinType);
+        setPinModal(null);
+        callback(pin);
+        return true;
       },
     });
   }, []);
@@ -338,7 +334,7 @@ const App: React.FC = () => {
       {pinModal && (
         <PinPad
           title={pinModal.title}
-          onSuccess={pinModal.onSuccess}
+          onVerify={pinModal.onVerify}
           onCancel={() => setPinModal(null)}
         />
       )}

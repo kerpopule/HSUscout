@@ -1,16 +1,18 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { X, Delete } from 'lucide-react';
 
 interface PinPadProps {
   title?: string;
-  onSuccess: (pin: string) => void;
+  onVerify: (pin: string) => Promise<boolean>;
   onCancel: () => void;
 }
 
-export const PinPad: React.FC<PinPadProps> = ({ title, onSuccess, onCancel }) => {
+export const PinPad: React.FC<PinPadProps> = ({ title, onVerify, onCancel }) => {
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [shake, setShake] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const verifyingRef = useRef(false);
 
   const triggerShake = useCallback(() => {
     setShake(true);
@@ -18,19 +20,36 @@ export const PinPad: React.FC<PinPadProps> = ({ title, onSuccess, onCancel }) =>
   }, []);
 
   const handleDigit = (digit: string) => {
-    if (pin.length >= 4) return;
+    if (pin.length >= 4 || verifyingRef.current) return;
     const next = pin + digit;
     setPin(next);
     setError('');
 
     if (next.length === 4) {
-      setTimeout(() => {
-        onSuccess(next);
+      setTimeout(async () => {
+        setVerifying(true);
+        verifyingRef.current = true;
+        try {
+          const ok = await onVerify(next);
+          if (!ok) {
+            setError('Wrong PIN');
+            setPin('');
+            triggerShake();
+          }
+        } catch {
+          setError('Cannot verify PIN');
+          setPin('');
+          triggerShake();
+        } finally {
+          setVerifying(false);
+          verifyingRef.current = false;
+        }
       }, 150);
     }
   };
 
   const handleBackspace = () => {
+    if (verifyingRef.current) return;
     setPin(pin.slice(0, -1));
     setError('');
   };
